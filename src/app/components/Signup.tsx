@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Shield, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Shield, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle2, Chrome } from "lucide-react";
 import { Link, useNavigate } from "react-router";
+import { signup as signupRequest } from "../lib/api";
+import { signInWithGooglePopup } from "../lib/firebase";
 
 export default function Signup() {
   const [formData, setFormData] = useState({
@@ -12,13 +14,21 @@ export default function Signup() {
   });
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const [acceptTerms, setAcceptTerms] = useState(false);
   const navigate = useNavigate();
+
+  const saveLocalSession = (name: string, userEmail: string, token: string) => {
+    localStorage.setItem("veritasai_authenticated", "true");
+    localStorage.setItem("veritasai_user", JSON.stringify({ name, email: userEmail }));
+    localStorage.setItem("veritasai_token", token);
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
@@ -37,17 +47,47 @@ export default function Signup() {
       return;
     }
 
+    if (!acceptTerms) {
+      setError("Please accept the Terms of Service and Privacy Policy");
+      return;
+    }
+
     setIsLoading(true);
 
-    // Simulate account creation
-    setTimeout(() => {
-      localStorage.setItem("veritasai_authenticated", "true");
-      localStorage.setItem("veritasai_user", JSON.stringify({ 
-        email: formData.email, 
-        name: formData.name 
-      }));
+    try {
+      const auth = await signupRequest({
+        name: formData.name,
+        email: formData.email,
+        password: formData.password,
+        confirm_password: formData.confirmPassword,
+        accept_terms: acceptTerms,
+      });
+
+      saveLocalSession(auth.user.name, auth.user.email, auth.token);
       navigate("/dashboard");
-    }, 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create account");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignup = async () => {
+    setError("");
+    setIsGoogleLoading(true);
+
+    try {
+      const credential = await signInWithGooglePopup();
+      const user = credential.user;
+      const token = await user.getIdToken();
+
+      saveLocalSession(user.displayName || user.email?.split("@")[0] || "Google User", user.email || "", token);
+      navigate("/dashboard");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-up failed");
+    } finally {
+      setIsGoogleLoading(false);
+    }
   };
 
   const passwordStrength = () => {
@@ -176,7 +216,13 @@ export default function Signup() {
 
             <div className="text-sm">
               <label className="flex items-start gap-2 text-gray-400 cursor-pointer">
-                <input type="checkbox" className="mt-1 rounded border-gray-700 bg-gray-900" required />
+                <input
+                  type="checkbox"
+                  checked={acceptTerms}
+                  onChange={(e) => setAcceptTerms(e.target.checked)}
+                  className="mt-1 rounded border-gray-700 bg-gray-900"
+                  required
+                />
                 <span>
                   I agree to the{" "}
                   <a href="#" className="text-cyan-400 hover:text-cyan-300">Terms of Service</a>
@@ -188,7 +234,7 @@ export default function Signup() {
 
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || isGoogleLoading}
               className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-gray-700 disabled:to-gray-700 text-white font-medium rounded-xl transition-all shadow-lg shadow-cyan-500/30 hover:shadow-cyan-500/50 hover:scale-[1.02] disabled:scale-100 disabled:shadow-none flex items-center justify-center gap-2"
             >
               {isLoading ? (
@@ -200,6 +246,32 @@ export default function Signup() {
                 <>
                   Create Account
                   <ArrowRight className="size-5" />
+                </>
+              )}
+            </button>
+
+            <div className="relative py-1">
+              <div className="h-px bg-gray-700/60" />
+              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-gray-900 px-2 text-xs text-gray-500">
+                OR
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleGoogleSignup}
+              disabled={isGoogleLoading || isLoading}
+              className="w-full py-3 bg-gray-800 hover:bg-gray-700 disabled:bg-gray-700 disabled:text-gray-500 text-gray-200 font-medium rounded-xl transition-all border border-gray-600 hover:border-gray-500 flex items-center justify-center gap-2"
+            >
+              {isGoogleLoading ? (
+                <>
+                  <div className="size-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Connecting Google...
+                </>
+              ) : (
+                <>
+                  <Chrome className="size-5" />
+                  Sign up with Google
                 </>
               )}
             </button>

@@ -1,16 +1,26 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Shield, Mail, Lock, ArrowRight, AlertCircle } from "lucide-react";
+import { Shield, Mail, Lock, ArrowRight, AlertCircle, Chrome } from "lucide-react";
 import { Link, useNavigate } from "react-router";
+import { login as loginRequest } from "../lib/api";
+import { signInWithGooglePopup } from "../lib/firebase";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const navigate = useNavigate();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const saveLocalSession = (name: string, userEmail: string, token: string) => {
+    localStorage.setItem("veritasai_authenticated", "true");
+    localStorage.setItem("veritasai_user", JSON.stringify({ name, email: userEmail }));
+    localStorage.setItem("veritasai_token", token);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     
@@ -20,13 +30,39 @@ export default function Login() {
     }
 
     setIsLoading(true);
-    
-    // Simulate authentication
-    setTimeout(() => {
-      localStorage.setItem("veritasai_authenticated", "true");
-      localStorage.setItem("veritasai_user", JSON.stringify({ email, name: email.split("@")[0] }));
+
+    try {
+      const auth = await loginRequest({
+        email,
+        password,
+        remember_me: rememberMe,
+      });
+
+      saveLocalSession(auth.user.name, auth.user.email, auth.token);
       navigate("/dashboard");
-    }, 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to sign in");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setError("");
+    setIsGoogleLoading(true);
+
+    try {
+      const credential = await signInWithGooglePopup();
+      const user = credential.user;
+      const token = await user.getIdToken();
+
+      saveLocalSession(user.displayName || user.email?.split("@")[0] || "Google User", user.email || "", token);
+      navigate("/dashboard");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-in failed");
+    } finally {
+      setIsGoogleLoading(false);
+    }
   };
 
   return (
@@ -105,7 +141,12 @@ export default function Login() {
 
             <div className="flex items-center justify-between text-sm">
               <label className="flex items-center gap-2 text-gray-400 cursor-pointer">
-                <input type="checkbox" className="rounded border-gray-700 bg-gray-900" />
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="rounded border-gray-700 bg-gray-900"
+                />
                 Remember me
               </label>
               <a href="#" className="text-cyan-400 hover:text-cyan-300 transition-colors">
@@ -115,7 +156,7 @@ export default function Login() {
 
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || isGoogleLoading}
               className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-gray-700 disabled:to-gray-700 text-white font-medium rounded-xl transition-all shadow-lg shadow-cyan-500/30 hover:shadow-cyan-500/50 hover:scale-[1.02] disabled:scale-100 disabled:shadow-none flex items-center justify-center gap-2"
             >
               {isLoading ? (
@@ -127,6 +168,32 @@ export default function Login() {
                 <>
                   Sign In
                   <ArrowRight className="size-5" />
+                </>
+              )}
+            </button>
+
+            <div className="relative py-1">
+              <div className="h-px bg-gray-700/60" />
+              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-gray-900 px-2 text-xs text-gray-500">
+                OR
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              disabled={isGoogleLoading || isLoading}
+              className="w-full py-3 bg-gray-800 hover:bg-gray-700 disabled:bg-gray-700 disabled:text-gray-500 text-gray-200 font-medium rounded-xl transition-all border border-gray-600 hover:border-gray-500 flex items-center justify-center gap-2"
+            >
+              {isGoogleLoading ? (
+                <>
+                  <div className="size-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Connecting Google...
+                </>
+              ) : (
+                <>
+                  <Chrome className="size-5" />
+                  Continue with Google
                 </>
               )}
             </button>

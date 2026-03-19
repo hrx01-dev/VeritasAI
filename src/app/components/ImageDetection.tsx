@@ -2,11 +2,12 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { Upload, AlertTriangle, CheckCircle, Loader2, Image as ImageIcon, Layers, Share2, Twitter, Facebook, Linkedin, MessageCircle, Copy, Check } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
+import { analyzeImage } from "../lib/api";
 
 type AnalysisResult = {
   prediction: "FAKE" | "REAL";
   confidence: number;
-  manipulationScore: number;
+  manipulationScore?: number;
   reasons: string[];
 };
 
@@ -18,11 +19,13 @@ export default function ImageDetection() {
   const [isDragging, setIsDragging] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
 
   const handleFileChange = (file: File) => {
     if (file && file.type.startsWith("image/")) {
       setSelectedFile(file);
       setResult(null);
+      setError("");
       const reader = new FileReader();
       reader.onloadend = () => {
         setPreview(reader.result as string);
@@ -38,37 +41,21 @@ export default function ImageDetection() {
     if (file) handleFileChange(file);
   };
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!selectedFile) return;
 
     setIsAnalyzing(true);
     setResult(null);
+    setError("");
 
-    setTimeout(() => {
-      const isFake = Math.random() > 0.5;
-      const confidence = Math.floor(Math.random() * 30) + 70;
-      const manipulationScore = isFake ? Math.floor(Math.random() * 30) + 70 : Math.floor(Math.random() * 30) + 10;
-
-      setResult({
-        prediction: isFake ? "FAKE" : "REAL",
-        confidence,
-        manipulationScore,
-        reasons: isFake
-          ? [
-              "AI-generated artifacts detected in pixel analysis",
-              "Metadata inconsistencies found",
-              "Image manipulation patterns identified",
-              "Unnatural lighting and shadow distribution",
-            ]
-          : [
-              "No digital manipulation traces detected",
-              "Metadata aligns with capture time and location",
-              "Natural pixel distribution patterns",
-              "Authentic lighting and perspective geometry",
-            ],
-      });
+    try {
+      const analysis = await analyzeImage(selectedFile);
+      setResult(analysis);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to analyze image");
+    } finally {
       setIsAnalyzing(false);
-    }, 3000);
+    }
   };
 
   const chartData = result
@@ -171,6 +158,10 @@ export default function ImageDetection() {
         >
           {isAnalyzing ? "Analyzing..." : "Analyze Image"}
         </button>
+
+        {error && (
+          <p className="mt-3 text-sm text-red-400">{error}</p>
+        )}
       </div>
 
       {/* Loading State */}
@@ -277,18 +268,18 @@ export default function ImageDetection() {
               <div className="flex justify-between items-center mb-2">
                 <span className="text-sm text-gray-400">Manipulation Score</span>
                 <span className={`font-semibold ${
-                  result.manipulationScore > 50 ? "text-red-400" : "text-green-400"
+                  (result.manipulationScore ?? 0) > 50 ? "text-red-400" : "text-green-400"
                 }`}>
-                  {result.manipulationScore}%
+                  {result.manipulationScore ?? 0}%
                 </span>
               </div>
               <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
                 <motion.div
                   initial={{ width: 0 }}
-                  animate={{ width: `${result.manipulationScore}%` }}
+                  animate={{ width: `${result.manipulationScore ?? 0}%` }}
                   transition={{ duration: 1, ease: "easeOut", delay: 0.2 }}
                   className={`h-full ${
-                    result.manipulationScore > 50
+                    (result.manipulationScore ?? 0) > 50
                       ? "bg-gradient-to-r from-orange-600 to-red-500"
                       : "bg-gradient-to-r from-green-600 to-emerald-500"
                   }`}

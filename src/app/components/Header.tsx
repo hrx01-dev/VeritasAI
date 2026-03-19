@@ -9,6 +9,7 @@ export default function Header() {
   const handleLogout = () => {
     localStorage.removeItem("veritasai_authenticated");
     localStorage.removeItem("veritasai_user");
+    localStorage.removeItem("veritasai_token");
     navigate("/login");
   };
 

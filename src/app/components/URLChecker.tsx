@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { Link as LinkIcon, AlertTriangle, CheckCircle, Loader2, ExternalLink, Share2, Twitter, Facebook, Linkedin, MessageCircle, Copy, Check } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
+import { analyzeUrl } from "../lib/api";
 
 type AnalysisResult = {
   prediction: "FAKE" | "REAL";
@@ -14,36 +15,23 @@ export default function URLChecker() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!url.trim()) return;
 
     setIsAnalyzing(true);
     setResult(null);
+    setError("");
 
-    setTimeout(() => {
-      const isFake = Math.random() > 0.5;
-      const confidence = Math.floor(Math.random() * 30) + 70;
-
-      setResult({
-        prediction: isFake ? "FAKE" : "REAL",
-        confidence,
-        reasons: isFake
-          ? [
-              "Domain recently registered with suspicious hosting",
-              "Multiple redirects to unverified sources detected",
-              "Content farm patterns and clickbait indicators",
-              "No SSL certificate or security verification",
-            ]
-          : [
-              "Established domain with verified credentials",
-              "Direct routing to legitimate source",
-              "Professional journalistic standards observed",
-              "Proper SSL encryption and security measures",
-            ],
-      });
+    try {
+      const analysis = await analyzeUrl(url);
+      setResult(analysis);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to analyze URL");
+    } finally {
       setIsAnalyzing(false);
-    }, 2000);
+    }
   };
 
   const chartData = result
@@ -91,6 +79,10 @@ export default function URLChecker() {
           >
             {isAnalyzing ? "Analyzing..." : "Check URL"}
           </button>
+
+          {error && (
+            <p className="text-sm text-red-400">{error}</p>
+          )}
         </div>
       </div>
 

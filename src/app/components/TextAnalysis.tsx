@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { AlertTriangle, CheckCircle, Loader2, FileText, Share2, Twitter, Facebook, Linkedin, MessageCircle, Copy, Check } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
+import { analyzeText } from "../lib/api";
 
 type AnalysisResult = {
   prediction: "FAKE" | "REAL";
@@ -14,37 +15,23 @@ export default function TextAnalysis() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!inputText.trim()) return;
 
     setIsAnalyzing(true);
     setResult(null);
+    setError("");
 
-    // Simulate analysis
-    setTimeout(() => {
-      const isFake = Math.random() > 0.5;
-      const confidence = Math.floor(Math.random() * 30) + 70;
-
-      setResult({
-        prediction: isFake ? "FAKE" : "REAL",
-        confidence,
-        reasons: isFake
-          ? [
-              "Sensational language and emotional manipulation detected",
-              "Claims lack credible source citations",
-              "Content pattern matches known misinformation templates",
-              "Inconsistent narrative structure identified",
-            ]
-          : [
-              "Content verified against multiple credible sources",
-              "Factual statements corroborate with established data",
-              "Neutral tone and objective language observed",
-              "Citations and references are legitimate",
-            ],
-      });
+    try {
+      const analysis = await analyzeText(inputText);
+      setResult(analysis);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to analyze text");
+    } finally {
       setIsAnalyzing(false);
-    }, 2500);
+    }
   };
 
   const chartData = result
@@ -87,6 +74,10 @@ export default function TextAnalysis() {
         >
           {isAnalyzing ? "Analyzing..." : "Analyze Content"}
         </button>
+
+        {error && (
+          <p className="mt-3 text-sm text-red-400">{error}</p>
+        )}
       </div>
 
       {/* Loading State */}

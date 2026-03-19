@@ -1,56 +1,6 @@
+import { useEffect, useMemo, useState } from "react";
 import { History as HistoryIcon, AlertTriangle, CheckCircle, FileText, Image, Video, Link } from "lucide-react";
-
-type HistoryItem = {
-  id: string;
-  type: "text" | "image" | "video" | "url";
-  content: string;
-  result: "FAKE" | "REAL";
-  confidence: number;
-  timestamp: string;
-};
-
-const mockHistory: HistoryItem[] = [
-  {
-    id: "1",
-    type: "text",
-    content: "Breaking: Major political announcement...",
-    result: "FAKE",
-    confidence: 87,
-    timestamp: "2 hours ago",
-  },
-  {
-    id: "2",
-    type: "image",
-    content: "celebrity_photo.jpg",
-    result: "FAKE",
-    confidence: 92,
-    timestamp: "5 hours ago",
-  },
-  {
-    id: "3",
-    type: "url",
-    content: "https://newssite.com/article",
-    result: "REAL",
-    confidence: 78,
-    timestamp: "1 day ago",
-  },
-  {
-    id: "4",
-    type: "video",
-    content: "interview_clip.mp4",
-    result: "FAKE",
-    confidence: 95,
-    timestamp: "2 days ago",
-  },
-  {
-    id: "5",
-    type: "text",
-    content: "Scientific study reveals new findings...",
-    result: "REAL",
-    confidence: 83,
-    timestamp: "3 days ago",
-  },
-];
+import { fetchHistory, type HistoryItem } from "../lib/api";
 
 const typeIcons = {
   text: FileText,
@@ -60,6 +10,41 @@ const typeIcons = {
 };
 
 export default function History() {
+  const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const loadHistory = async () => {
+      setIsLoading(true);
+      setError("");
+
+      try {
+        const items = await fetchHistory();
+        setHistoryItems(items);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to load history");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    void loadHistory();
+  }, []);
+
+  const stats = useMemo(() => {
+    const total = historyItems.length;
+    const fake = historyItems.filter((item) => item.result === "FAKE").length;
+    const real = historyItems.filter((item) => item.result === "REAL").length;
+    return { total, fake, real };
+  }, [historyItems]);
+
+  const formatTimestamp = (timestamp: string) => {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return timestamp;
+    return date.toLocaleString();
+  };
+
   return (
     <div className="space-y-6">
       <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-gray-700/50 p-6 shadow-2xl shadow-black/20 backdrop-blur-sm">
@@ -71,7 +56,15 @@ export default function History() {
         </div>
 
         <div className="space-y-3">
-          {mockHistory.map((item) => {
+          {isLoading && <p className="text-sm text-gray-400">Loading history...</p>}
+
+          {!isLoading && error && <p className="text-sm text-red-400">{error}</p>}
+
+          {!isLoading && !error && historyItems.length === 0 && (
+            <p className="text-sm text-gray-400">No analysis history yet. Run an analysis to populate this section.</p>
+          )}
+
+          {!isLoading && !error && historyItems.map((item) => {
             const Icon = typeIcons[item.type];
             return (
               <div
@@ -87,7 +80,7 @@ export default function History() {
                       <p className="text-gray-200 truncate mb-1">
                         {item.content}
                       </p>
-                      <p className="text-xs text-gray-500">{item.timestamp}</p>
+                      <p className="text-xs text-gray-500">{formatTimestamp(item.timestamp)}</p>
                     </div>
                   </div>
 
@@ -148,15 +141,15 @@ export default function History() {
       {/* Stats Card */}
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-blue-500/30 p-6 text-center shadow-xl shadow-blue-900/10 hover:shadow-blue-500/20 transition-all">
-          <p className="text-3xl font-bold text-blue-400 mb-1">5</p>
+          <p className="text-3xl font-bold text-blue-400 mb-1">{stats.total}</p>
           <p className="text-sm text-gray-400">Total Analyses</p>
         </div>
         <div className="bg-gradient-to-br from-red-950/30 to-gray-900/50 rounded-2xl border border-red-500/30 p-6 text-center shadow-xl shadow-red-900/10 hover:shadow-red-500/20 transition-all">
-          <p className="text-3xl font-bold text-red-500 mb-1">3</p>
+          <p className="text-3xl font-bold text-red-500 mb-1">{stats.fake}</p>
           <p className="text-sm text-gray-400">Fake Detected</p>
         </div>
         <div className="bg-gradient-to-br from-green-950/30 to-gray-900/50 rounded-2xl border border-green-500/30 p-6 text-center shadow-xl shadow-green-900/10 hover:shadow-green-500/20 transition-all">
-          <p className="text-3xl font-bold text-green-500 mb-1">2</p>
+          <p className="text-3xl font-bold text-green-500 mb-1">{stats.real}</p>
           <p className="text-sm text-gray-400">Real Verified</p>
         </div>
       </div>

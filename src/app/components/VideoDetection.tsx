@@ -2,11 +2,12 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { Upload, AlertTriangle, CheckCircle, Loader2, Video, Layers, Share2, Twitter, Facebook, Linkedin, MessageCircle, Copy, Check } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
+import { analyzeVideo } from "../lib/api";
 
 type AnalysisResult = {
   prediction: "FAKE" | "REAL";
   confidence: number;
-  deepfakeScore: number;
+  deepfakeScore?: number;
   reasons: string[];
 };
 
@@ -17,11 +18,13 @@ export default function VideoDetection() {
   const [isDragging, setIsDragging] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
 
   const handleFileChange = (file: File) => {
     if (file && file.type.startsWith("video/")) {
       setSelectedFile(file);
       setResult(null);
+      setError("");
     }
   };
 
@@ -32,37 +35,21 @@ export default function VideoDetection() {
     if (file) handleFileChange(file);
   };
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!selectedFile) return;
 
     setIsAnalyzing(true);
     setResult(null);
+    setError("");
 
-    setTimeout(() => {
-      const isFake = Math.random() > 0.5;
-      const confidence = Math.floor(Math.random() * 30) + 70;
-      const deepfakeScore = isFake ? Math.floor(Math.random() * 30) + 70 : Math.floor(Math.random() * 30) + 10;
-
-      setResult({
-        prediction: isFake ? "FAKE" : "REAL",
-        confidence,
-        deepfakeScore,
-        reasons: isFake
-          ? [
-              "Deepfake facial manipulation detected",
-              "Audio-video synchronization anomalies",
-              "Frame-by-frame inconsistencies found",
-              "Synthetic voice patterns identified",
-            ]
-          : [
-              "Authentic facial movements and expressions",
-              "Natural audio-video synchronization",
-              "Consistent frame quality and transitions",
-              "No synthetic audio generation detected",
-            ],
-      });
+    try {
+      const analysis = await analyzeVideo(selectedFile);
+      setResult(analysis);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to analyze video");
+    } finally {
       setIsAnalyzing(false);
-    }, 4000);
+    }
   };
 
   const chartData = result
@@ -73,7 +60,7 @@ export default function VideoDetection() {
     : [];
 
   const copyToClipboard = () => {
-    const text = `Video Detection Result: ${result?.prediction} with ${result?.confidence}% confidence and ${result?.deepfakeScore}% deepfake score.`;
+    const text = `Video Detection Result: ${result?.prediction} with ${result?.confidence}% confidence and ${result?.deepfakeScore ?? 0}% deepfake score.`;
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -165,6 +152,10 @@ export default function VideoDetection() {
         >
           {isAnalyzing ? "Analyzing..." : "Analyze Video"}
         </button>
+
+        {error && (
+          <p className="mt-3 text-sm text-red-400">{error}</p>
+        )}
       </div>
 
       {/* Loading State */}
@@ -271,18 +262,18 @@ export default function VideoDetection() {
               <div className="flex justify-between items-center mb-2">
                 <span className="text-sm text-gray-400">Deepfake Score</span>
                 <span className={`font-semibold ${
-                  result.deepfakeScore > 50 ? "text-red-400" : "text-green-400"
+                  (result.deepfakeScore ?? 0) > 50 ? "text-red-400" : "text-green-400"
                 }`}>
-                  {result.deepfakeScore}%
+                  {result.deepfakeScore ?? 0}%
                 </span>
               </div>
               <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
                 <motion.div
                   initial={{ width: 0 }}
-                  animate={{ width: `${result.deepfakeScore}%` }}
+                  animate={{ width: `${result.deepfakeScore ?? 0}%` }}
                   transition={{ duration: 1, ease: "easeOut", delay: 0.2 }}
                   className={`h-full ${
-                    result.deepfakeScore > 50
+                    (result.deepfakeScore ?? 0) > 50
                       ? "bg-gradient-to-r from-orange-600 to-red-500"
                       : "bg-gradient-to-r from-green-600 to-emerald-500"
                   }`}
