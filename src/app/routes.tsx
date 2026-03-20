@@ -9,6 +9,7 @@ import Login from "./components/Login";
 import Signup from "./components/Signup";
 import Landing from "./components/Landing";
 import ProtectedRoute from "./components/ProtectedRoute";
+import FeatureChooser from "./components/FeatureChooser";
 
 export const router = createBrowserRouter([
   {
@@ -31,7 +32,7 @@ export const router = createBrowserRouter([
       </ProtectedRoute>
     ),
     children: [
-      { index: true, Component: TextAnalysis },
+      { index: true, Component: FeatureChooser },
       { path: "text-analysis", Component: TextAnalysis },
       { path: "image-detection", Component: ImageDetection },
       { path: "video-detection", Component: VideoDetection },

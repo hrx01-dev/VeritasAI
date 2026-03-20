@@ -1,4 +1,4 @@
-import { Moon, Sun, LogOut } from "lucide-react";
+import { Moon, Sun, LogOut, LayoutGrid } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
@@ -25,6 +25,14 @@ export default function Header() {
 
       {/* Status & Theme Toggle */}
       <div className="flex items-center gap-4">
+        <button
+          onClick={() => navigate("/dashboard")}
+          className="inline-flex items-center gap-2 rounded-xl border border-gray-700/50 bg-gray-800/50 px-3 py-2 text-sm text-gray-300 transition-all hover:border-cyan-500/30 hover:text-cyan-300"
+        >
+          <LayoutGrid className="size-4" />
+          Features
+        </button>
+
         {/* Live Status Indicator */}
         <div className="flex items-center gap-2 px-3 py-1.5 bg-green-950/30 border border-green-500/30 rounded-full">
           <div className="relative">

@@ -1,8 +1,24 @@
 import { motion } from "motion/react";
+import { useEffect, useRef } from "react";
 import { Shield, FileText, Image, Video, Link as LinkIcon, ArrowRight, CheckCircle, AlertTriangle, TrendingUp, Users, DollarSign, Upload, Scan, BarChart3, Share2, Clock } from "lucide-react";
 import { Link as RouterLink } from "react-router";
 
 export default function Landing() {
+  const analyticsRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const section = analyticsRef.current;
+    if (!section) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      section.scrollIntoView({ behavior: "auto", block: "start" });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const features = [
     {
       icon: FileText,
@@ -118,7 +134,7 @@ export default function Landing() {
       </section>
 
       {/* Impact Statistics Section */}
-      <section className="relative z-10 max-w-7xl mx-auto px-6 py-20">
+      <section ref={analyticsRef} className="relative z-10 max-w-7xl mx-auto px-6 py-20">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
