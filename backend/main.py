@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
@@ -10,6 +12,11 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
+
+try:
+    from transformers import pipeline  # pyright: ignore[reportMissingImports]
+except ImportError:
+    pipeline = None
 
 try:
     import firebase_admin
@@ -37,6 +44,34 @@ app.add_middleware(
 USERS: Dict[str, Dict[str, str]] = {}
 ANALYSIS_HISTORY: List[dict] = []
 FIRESTORE_DB = None
+TEXT_CLASSIFIER = None
+TEXT_CLASSIFIER_LOCK = threading.Lock()
+TEXT_LABELS = ["fake news", "real news"]
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+FAKE_CUE_KEYWORDS = {
+    "urgent",
+    "shocking",
+    "secret",
+    "exclusive",
+    "they don't want you to know",
+    "miracle",
+    "guaranteed",
+    "unverified",
+    "rumor",
+}
+
+REAL_CUE_KEYWORDS = {
+    "according to",
+    "reported by",
+    "study",
+    "data",
+    "source",
+    "official",
+    "evidence",
+    "verified",
+    "confirmed",
+}
 
 
 class UserResponse(BaseModel):
@@ -162,6 +197,83 @@ def _base_result(seed: str, fake_reasons: List[str], real_reasons: List[str]) ->
     )
 
 
+def _load_text_classifier():
+    global TEXT_CLASSIFIER
+
+    if pipeline is None:
+        raise RuntimeError("transformers is not installed")
+
+    if TEXT_CLASSIFIER is not None:
+        return TEXT_CLASSIFIER
+
+    with TEXT_CLASSIFIER_LOCK:
+        if TEXT_CLASSIFIER is not None:
+            return TEXT_CLASSIFIER
+
+        logger.info("Loading Hugging Face text classifier for fake/real detection...")
+        TEXT_CLASSIFIER = pipeline(
+            "zero-shot-classification",
+            model="typeform/distilbert-base-uncased-mnli",
+        )
+        logger.info("Text classifier loaded successfully.")
+
+    return TEXT_CLASSIFIER
+
+
+def _extract_key_points(text: str, max_points: int = 3) -> List[str]:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return []
+
+    sentences = [segment.strip() for segment in SENTENCE_SPLIT_RE.split(normalized) if segment.strip()]
+    if not sentences:
+        sentences = [normalized]
+
+    ranked = sorted(sentences, key=len, reverse=True)
+    points: List[str] = []
+    for sentence in ranked:
+        shortened = sentence[:160].strip()
+        if shortened and shortened not in points:
+            points.append(shortened)
+        if len(points) >= max_points:
+            break
+
+    return points
+
+
+def _detect_cues(text: str, cue_set: set[str], max_matches: int = 3) -> List[str]:
+    lower = text.lower()
+    matches = [cue for cue in cue_set if cue in lower]
+    return matches[:max_matches]
+
+
+def _build_text_reasons(prediction: Prediction, confidence: int, text: str) -> List[str]:
+    key_points = _extract_key_points(text)
+    fake_cues = _detect_cues(text, FAKE_CUE_KEYWORDS)
+    real_cues = _detect_cues(text, REAL_CUE_KEYWORDS)
+
+    if prediction == "FAKE":
+        reasons = [
+            f"Model confidence for FAKE pattern is {confidence}% based on zero-shot BERT-style inference.",
+            "Sensational or unverified framing appears stronger than evidence-backed framing.",
+        ]
+        if fake_cues:
+            reasons.append(f"Potential misinformation cues detected: {', '.join(fake_cues)}.")
+        if key_points:
+            reasons.append(f"Key point flagged: {key_points[0]}")
+        return reasons[:4]
+
+    reasons = [
+        f"Model confidence for REAL pattern is {confidence}% based on zero-shot BERT-style inference.",
+        "The content structure is more consistent with factual and evidence-aligned reporting.",
+    ]
+    if real_cues:
+        reasons.append(f"Credibility cues detected: {', '.join(real_cues)}.")
+    if key_points:
+        reasons.append(f"Key point extracted: {key_points[0]}")
+    return reasons[:4]
+
+
 def _push_history(item_type: AnalysisType, content: str, result: AnalysisResponse) -> None:
     history_id = str(uuid.uuid4())
     history_item = {
@@ -271,20 +383,34 @@ def login(payload: LoginRequest) -> AuthResponse:
 
 @app.post("/api/analyze/text", response_model=AnalysisResponse)
 def analyze_text(payload: TextAnalysisRequest) -> AnalysisResponse:
-    result = _base_result(
-        payload.text,
-        fake_reasons=[
-            "Sensational language and emotional manipulation detected",
-            "Claims lack credible source citations",
-            "Content pattern matches known misinformation templates",
-            "Inconsistent narrative structure identified",
-        ],
-        real_reasons=[
-            "Content verified against multiple credible sources",
-            "Factual statements corroborate with established data",
-            "Neutral tone and objective language observed",
-            "Citations and references are legitimate",
-        ],
+    try:
+        classifier = _load_text_classifier()
+        model_output = classifier(
+            payload.text,
+            candidate_labels=TEXT_LABELS,
+            hypothesis_template="This text is {}.",
+        )
+    except Exception as exc:
+        logger.exception("Text model inference failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Text analysis model is unavailable. Please try again shortly.",
+        ) from exc
+
+    labels = model_output.get("labels", [])
+    scores = model_output.get("scores", [])
+    score_map = {label: float(score) for label, score in zip(labels, scores)}
+    fake_score = score_map.get("fake news", 0.0)
+    real_score = score_map.get("real news", 0.0)
+
+    prediction: Prediction = "FAKE" if fake_score >= real_score else "REAL"
+    confidence = int(round(max(fake_score, real_score) * 100))
+    confidence = max(1, min(99, confidence))
+
+    result = AnalysisResponse(
+        prediction=prediction,
+        confidence=confidence,
+        reasons=_build_text_reasons(prediction, confidence, payload.text),
     )
     _push_history("text", payload.text[:120], result)
     return result
