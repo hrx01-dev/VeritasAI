@@ -52,6 +52,42 @@ export default function URLChecker() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const getShareMessage = () => {
+    return `VeritasAI URL Check Result:\nURL: ${url}\nPrediction: ${result?.prediction}\nConfidence: ${result?.confidence}%\nTrust Score: ${result?.trustScore ?? 0}/100\nBadge: ${result?.badge ?? "N/A"}`;
+  };
+
+  const handlePlatformShare = (platform: "twitter" | "facebook" | "linkedin" | "email") => {
+    if (!result) return;
+
+    const message = getShareMessage();
+    const encodedMessage = encodeURIComponent(message);
+    const encodedUrl = encodeURIComponent(url || "https://example.com");
+
+    let shareUrl = "";
+    if (platform === "twitter") {
+      shareUrl = `https://twitter.com/intent/tweet?text=${encodedMessage}`;
+    } else if (platform === "facebook") {
+      shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}&quote=${encodedMessage}`;
+    } else if (platform === "linkedin") {
+      shareUrl = `https://www.linkedin.com/shareArticle?mini=true&url=${encodedUrl}&title=URL%20Check%20Result&summary=${encodedMessage}`;
+    } else {
+      shareUrl = `mailto:?subject=URL%20Check%20Result&body=${encodedMessage}`;
+    }
+
+    if (platform === "email") {
+      window.location.href = shareUrl;
+    } else {
+      window.open(shareUrl, "_blank", "noopener,noreferrer");
+    }
+
+    navigator.clipboard.writeText(message).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      // Ignore clipboard errors while keeping the share action.
+    });
+  };
+
   return (
     <div className="space-y-6">
       {/* Input Section */}
@@ -285,38 +321,30 @@ export default function URLChecker() {
                   <Copy className="size-5" />
                 )}
               </button>
-              <a
-                href={`https://twitter.com/intent/tweet?url=${encodeURIComponent(url)}`}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                onClick={() => handlePlatformShare("twitter")}
                 className="px-4 py-2 bg-blue-500 hover:bg-blue-400 text-white font-medium rounded-xl transition-all shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 hover:scale-[1.02] disabled:scale-100 disabled:shadow-none"
               >
                 <Twitter className="size-5" />
-              </a>
-              <a
-                href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                onClick={() => handlePlatformShare("facebook")}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-xl transition-all shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 hover:scale-[1.02] disabled:scale-100 disabled:shadow-none"
               >
                 <Facebook className="size-5" />
-              </a>
-              <a
-                href={`https://www.linkedin.com/shareArticle?mini=true&url=${encodeURIComponent(url)}`}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                onClick={() => handlePlatformShare("linkedin")}
                 className="px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 hover:scale-[1.02] disabled:scale-100 disabled:shadow-none"
               >
                 <Linkedin className="size-5" />
-              </a>
-              <a
-                href={`mailto:?subject=Check%20this%20URL&body=${encodeURIComponent(url)}`}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                onClick={() => handlePlatformShare("email")}
                 className="px-4 py-2 bg-gray-500 hover:bg-gray-400 text-white font-medium rounded-xl transition-all shadow-lg shadow-gray-500/30 hover:shadow-gray-500/50 hover:scale-[1.02] disabled:scale-100 disabled:shadow-none"
               >
                 <MessageCircle className="size-5" />
-              </a>
+              </button>
             </div>
           </div>
         </motion.div>

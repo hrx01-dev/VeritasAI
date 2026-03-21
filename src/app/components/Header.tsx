@@ -1,6 +1,7 @@
 import { Moon, Sun, LogOut, LayoutGrid } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
+import VeritasLogo from "./VeritasLogo";
 
 export default function Header() {
   const [isDark, setIsDark] = useState(true);
@@ -17,10 +18,14 @@ export default function Header() {
 
   return (
     <header className="h-16 bg-gradient-to-r from-gray-900 to-black border-b border-gray-800/50 px-6 flex items-center justify-between shadow-xl backdrop-blur-sm">
-      {/* Title */}
-      <div>
-        <h2 className="text-lg font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">VeritasAI Dashboard</h2>
-        {user.name && <p className="text-xs text-gray-500">Welcome, {user.name}</p>}
+      {/* Brand */}
+      <div className="flex items-center gap-4">
+        <VeritasLogo />
+        <div className="h-8 w-px bg-gray-700/60" />
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Dashboard</h2>
+          {user.name && <p className="text-xs text-gray-500">Welcome, {user.name}</p>}
+        </div>
       </div>
 
       {/* Status & Theme Toggle */}

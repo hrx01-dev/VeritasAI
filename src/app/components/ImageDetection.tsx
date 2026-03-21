@@ -104,6 +104,43 @@ export default function ImageDetection() {
     });
   };
 
+  const getShareMessage = () => {
+    const source = selectedFile?.name ? `\nSource: ${selectedFile.name}` : "";
+    return `VeritasAI Image Detection Result:\nPrediction: ${result?.prediction}\nConfidence: ${result?.confidence}%\nManipulation Score: ${result?.manipulationScore ?? 0}%${source}`;
+  };
+
+  const handlePlatformShare = (platform: "twitter" | "facebook" | "linkedin" | "email") => {
+    if (!result) return;
+
+    const message = getShareMessage();
+    const encodedMessage = encodeURIComponent(message);
+    const encodedSourceUrl = encodeURIComponent("https://example.com/image-detection");
+
+    let shareUrl = "";
+    if (platform === "twitter") {
+      shareUrl = `https://twitter.com/intent/tweet?text=${encodedMessage}`;
+    } else if (platform === "facebook") {
+      shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodedSourceUrl}&quote=${encodedMessage}`;
+    } else if (platform === "linkedin") {
+      shareUrl = `https://www.linkedin.com/shareArticle?mini=true&url=${encodedSourceUrl}&title=Image%20Detection%20Result&summary=${encodedMessage}`;
+    } else {
+      shareUrl = `mailto:?subject=Image%20Detection%20Result&body=${encodedMessage}`;
+    }
+
+    if (platform === "email") {
+      window.location.href = shareUrl;
+    } else {
+      window.open(shareUrl, "_blank", "noopener,noreferrer");
+    }
+
+    navigator.clipboard.writeText(message).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      // Ignore clipboard errors while keeping the share action.
+    });
+  };
+
   return (
     <div className="space-y-6">
       {/* Upload Section */}
@@ -495,42 +532,34 @@ export default function ImageDetection() {
                 <Copy className="size-4" />
                 {copied ? "Copied!" : "Copy"}
               </button>
-              <a
-                href={`https://twitter.com/intent/tweet?text=Image%20Detection%20Result:%20${result?.prediction}%20(${result?.confidence}%)`}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                onClick={() => handlePlatformShare("twitter")}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all bg-blue-500 text-white hover:bg-blue-600"
               >
                 <Twitter className="size-4" />
                 Twitter
-              </a>
-              <a
-                href={`https://www.facebook.com/sharer/sharer.php?u=https://example.com/image-detection&quote=Image%20Detection%20Result:%20${result?.prediction}%20(${result?.confidence}%)`}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                onClick={() => handlePlatformShare("facebook")}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all bg-blue-600 text-white hover:bg-blue-700"
               >
                 <Facebook className="size-4" />
                 Facebook
-              </a>
-              <a
-                href={`https://www.linkedin.com/shareArticle?mini=true&url=https://example.com/image-detection&title=Image%20Detection%20Result&summary=${result?.prediction}%20(${result?.confidence}%)`}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                onClick={() => handlePlatformShare("linkedin")}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all bg-blue-700 text-white hover:bg-blue-800"
               >
                 <Linkedin className="size-4" />
                 LinkedIn
-              </a>
-              <a
-                href={`mailto:?subject=Image%20Detection%20Result&body=Image%20Detection%20Result:%20${result?.prediction}%20(${result?.confidence}%)`}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                onClick={() => handlePlatformShare("email")}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all bg-gray-700 text-gray-300 hover:bg-gray-600"
               >
                 <MessageCircle className="size-4" />
                 Email
-              </a>
+              </button>
             </div>
           </div>
         </motion.div>

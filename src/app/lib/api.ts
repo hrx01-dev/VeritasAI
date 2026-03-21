@@ -141,6 +141,16 @@ export async function analyzeVideo(file: File): Promise<AnalysisResult> {
   return readResponse<AnalysisResult>(response);
 }
 
+export async function analyzeVideoUrl(url: string): Promise<AnalysisResult> {
+  const response = await fetch(`${API_BASE_URL}/api/analyze/video-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+
+  return readResponse<AnalysisResult>(response);
+}
+
 export async function fetchHistory(): Promise<HistoryItem[]> {
   const response = await fetch(`${API_BASE_URL}/api/history`);
   return readResponse<HistoryItem[]>(response);

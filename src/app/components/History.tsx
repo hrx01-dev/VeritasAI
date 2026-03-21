@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { History as HistoryIcon, AlertTriangle, CheckCircle, FileText, Image, Video, Link, Download } from "lucide-react";
 import { fetchHistory, type HistoryItem } from "../lib/api";
+import { BarChart, Bar, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 const typeIcons = {
   text: FileText,
@@ -37,6 +38,47 @@ export default function History() {
     const fake = historyItems.filter((item) => item.result === "FAKE").length;
     const real = historyItems.filter((item) => item.result === "REAL").length;
     return { total, fake, real };
+  }, [historyItems]);
+
+  const resultDistributionData = useMemo(
+    () => [
+      { name: "Fake", value: stats.fake, color: "#ef4444" },
+      { name: "Real", value: stats.real, color: "#22c55e" },
+    ],
+    [stats.fake, stats.real],
+  );
+
+  const analysisTypeData = useMemo(() => {
+    const counts = {
+      text: 0,
+      url: 0,
+      image: 0,
+      video: 0,
+    };
+
+    historyItems.forEach((item) => {
+      counts[item.type] += 1;
+    });
+
+    return [
+      { type: "Text", total: counts.text },
+      { type: "URL", total: counts.url },
+      { type: "Image", total: counts.image },
+      { type: "Video", total: counts.video },
+    ];
+  }, [historyItems]);
+
+  const confidenceTrendData = useMemo(() => {
+    const sorted = [...historyItems]
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      .slice(-12);
+
+    return sorted.map((item, index) => ({
+      label: `${index + 1}`,
+      confidence: item.confidence,
+      type: item.type.toUpperCase(),
+      result: item.result,
+    }));
   }, [historyItems]);
 
   const formatTimestamp = (timestamp: string) => {
@@ -107,44 +149,82 @@ export default function History() {
 
     const generatedAt = new Date().toLocaleString();
 
+    const drawPdfLogo = (x: number, y: number, scale = 1, withWordmark = true) => {
+      const markW = 42 * scale;
+      const markH = 42 * scale;
+
+      doc.setFillColor(14, 165, 233);
+      doc.roundedRect(x, y, markW, markH, 11 * scale, 11 * scale, "F");
+
+      doc.setFillColor(255, 255, 255);
+      doc.roundedRect(x + (8 * scale), y + (8 * scale), 26 * scale, 26 * scale, 9 * scale, 9 * scale, "F");
+
+      doc.setFillColor(20, 184, 166);
+      doc.triangle(
+        x + (17 * scale),
+        y + (14 * scale),
+        x + (12 * scale),
+        y + (26 * scale),
+        x + (22 * scale),
+        y + (26 * scale),
+        "F",
+      );
+      doc.triangle(
+        x + (22 * scale),
+        y + (22 * scale),
+        x + (18 * scale),
+        y + (34 * scale),
+        x + (30 * scale),
+        y + (20 * scale),
+        "F",
+      );
+
+      doc.setFillColor(153, 246, 228);
+      doc.circle(x + (34 * scale), y + (35 * scale), 2.2 * scale, "F");
+      doc.setDrawColor(153, 246, 228);
+      doc.setLineWidth(1.7 * scale);
+      doc.line(x + (32 * scale), y + (33 * scale), x + (28 * scale), y + (29 * scale));
+
+      if (withWordmark) {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(24 * scale);
+        doc.setTextColor(14, 116, 144);
+        doc.text("VeritasAI", x + (markW + (14 * scale)), y + (26 * scale));
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8.5 * scale);
+        doc.setTextColor(100, 116, 139);
+        doc.text("TRUST INTELLIGENCE", x + (markW + (15 * scale)), y + (37 * scale));
+      }
+    };
+
     const drawCoverPage = () => {
       const centerX = pageWidth / 2;
       const centerY = pageHeight / 2;
 
       doc.setFillColor(239, 246, 255);
       doc.rect(0, 0, pageWidth, pageHeight, "F");
-
-      doc.setFillColor(14, 116, 144);
-      doc.circle(centerX, centerY - 80, 40, "F");
-      doc.setFillColor(255, 255, 255);
-      doc.circle(centerX, centerY - 80, 28, "F");
-      doc.setDrawColor(14, 116, 144);
-      doc.setLineWidth(4);
-      doc.line(centerX - 12, centerY - 80, centerX - 2, centerY - 68);
-      doc.line(centerX - 2, centerY - 68, centerX + 16, centerY - 92);
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(38);
-      doc.setTextColor(14, 116, 144);
-      doc.text("VeritasAI", centerX, centerY + 8, { align: "center" });
+      drawPdfLogo(centerX - 138, centerY - 104, 1.55, true);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(14);
       doc.setTextColor(51, 65, 85);
-      doc.text("Comprehensive Detection Analysis Report", centerX, centerY + 34, { align: "center" });
-      doc.text(`Generated on ${generatedAt}`, centerX, centerY + 56, { align: "center" });
+      doc.text("Comprehensive Detection Analysis Report", centerX, centerY + 50, { align: "center" });
+      doc.text(`Generated on ${generatedAt}`, centerX, centerY + 72, { align: "center" });
     };
 
     const drawPrimaryHeader = (row: (typeof rows)[number], cursorY: number) => {
+      drawPdfLogo(40, cursorY - 18, 0.42, true);
+
       doc.setFont("helvetica", "bold");
       doc.setFontSize(16);
       doc.setTextColor(15, 23, 42);
-      doc.text("VeritasAI Detection Report", 40, cursorY);
+      doc.text("Detection Report", 170, cursorY);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
       doc.setTextColor(100, 116, 139);
-      doc.text(`Generated: ${generatedAt}`, pageWidth - 210, cursorY);
+      doc.text(`Generated: ${generatedAt}`, pageWidth - 200, cursorY);
 
       cursorY += 26;
       doc.setDrawColor(226, 232, 240);
@@ -182,10 +262,12 @@ export default function History() {
     };
 
     const drawContinuationHeader = (row: (typeof rows)[number], cursorY: number) => {
+      drawPdfLogo(40, cursorY - 18, 0.34, true);
+
       doc.setFont("helvetica", "bold");
       doc.setFontSize(12);
       doc.setTextColor(30, 41, 59);
-      doc.text(`Analysis #${row.index} Continued`, 40, cursorY);
+      doc.text(`Analysis #${row.index} Continued`, 150, cursorY);
       doc.setDrawColor(226, 232, 240);
       doc.line(40, cursorY + 8, pageWidth - 40, cursorY + 8);
       return cursorY + 26;
@@ -570,6 +652,97 @@ export default function History() {
             <Download className="size-4" />
             Download PDF Report
           </button>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-gray-700/50 p-6 shadow-2xl shadow-black/20 backdrop-blur-sm">
+          <h4 className="text-lg font-semibold text-white mb-1">Results Distribution</h4>
+          <p className="text-sm text-gray-400 mb-4">Fake vs Real across all analyses</p>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={resultDistributionData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={56}
+                  outerRadius={86}
+                  paddingAngle={4}
+                >
+                  {resultDistributionData.map((entry) => (
+                    <Cell key={entry.name} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: "#111827",
+                    borderColor: "#374151",
+                    color: "#e5e7eb",
+                  }}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-gray-700/50 p-6 shadow-2xl shadow-black/20 backdrop-blur-sm">
+          <h4 className="text-lg font-semibold text-white mb-1">Analysis by Type</h4>
+          <p className="text-sm text-gray-400 mb-4">Total analyses grouped by modality</p>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={analysisTypeData} margin={{ top: 12, right: 8, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="type" stroke="#9ca3af" tick={{ fill: "#9ca3af" }} />
+                <YAxis allowDecimals={false} stroke="#9ca3af" tick={{ fill: "#9ca3af" }} />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: "#111827",
+                    borderColor: "#374151",
+                    color: "#e5e7eb",
+                  }}
+                />
+                <Bar dataKey="total" radius={[8, 8, 0, 0]} fill="#06b6d4" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-gray-700/50 p-6 shadow-2xl shadow-black/20 backdrop-blur-sm">
+        <h4 className="text-lg font-semibold text-white mb-1">Confidence Trend</h4>
+        <p className="text-sm text-gray-400 mb-4">Recent confidence scores over time (latest 12 analyses)</p>
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={confidenceTrendData} margin={{ top: 12, right: 12, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+              <XAxis dataKey="label" stroke="#9ca3af" tick={{ fill: "#9ca3af" }} />
+              <YAxis domain={[0, 100]} stroke="#9ca3af" tick={{ fill: "#9ca3af" }} />
+              <Tooltip
+                formatter={(value) => [`${value}%`, "Confidence"]}
+                labelFormatter={(value, payload) => {
+                  const point = payload?.[0]?.payload;
+                  if (!point) return `Sample ${value}`;
+                  return `Sample ${value} • ${point.type} • ${point.result}`;
+                }}
+                contentStyle={{
+                  backgroundColor: "#111827",
+                  borderColor: "#374151",
+                  color: "#e5e7eb",
+                }}
+              />
+              <Line
+                type="monotone"
+                dataKey="confidence"
+                stroke="#22d3ee"
+                strokeWidth={3}
+                dot={{ r: 4, fill: "#22d3ee" }}
+                activeDot={{ r: 6 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
         </div>
       </div>
 

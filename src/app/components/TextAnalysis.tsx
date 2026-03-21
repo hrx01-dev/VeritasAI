@@ -72,6 +72,42 @@ export default function TextAnalysis() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const getShareMessage = () => {
+    return `VeritasAI Text Analysis Result:\nPrediction: ${result?.prediction}\nConfidence: ${result?.confidence}%\nReasons:\n${result?.reasons.join("\n")}`;
+  };
+
+  const handlePlatformShare = (platform: "twitter" | "facebook" | "linkedin" | "email") => {
+    if (!result) return;
+
+    const message = getShareMessage();
+    const encodedMessage = encodeURIComponent(message);
+    const encodedSourceUrl = encodeURIComponent("https://example.com/text-analysis");
+
+    let shareUrl = "";
+    if (platform === "twitter") {
+      shareUrl = `https://twitter.com/intent/tweet?text=${encodedMessage}`;
+    } else if (platform === "facebook") {
+      shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodedSourceUrl}&quote=${encodedMessage}`;
+    } else if (platform === "linkedin") {
+      shareUrl = `https://www.linkedin.com/shareArticle?mini=true&url=${encodedSourceUrl}&title=Text%20Analysis%20Result&summary=${encodedMessage}`;
+    } else {
+      shareUrl = `mailto:?subject=Text%20Analysis%20Result&body=${encodedMessage}`;
+    }
+
+    if (platform === "email") {
+      window.location.href = shareUrl;
+    } else {
+      window.open(shareUrl, "_blank", "noopener,noreferrer");
+    }
+
+    navigator.clipboard.writeText(message).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      // Ignore clipboard errors while keeping the share action.
+    });
+  };
+
   return (
     <div className="space-y-6">
       {/* Input Section */}
@@ -273,56 +309,28 @@ export default function TextAnalysis() {
               Copy
             </button>
             <button
-              onClick={() =>
-                window.open(
-                  `https://twitter.com/intent/tweet?text=Prediction:%20${result?.prediction}%0AConfidence:%20${result?.confidence}%25%0AReasons:%0A${result?.reasons.join(
-                    "%0A"
-                  )}`,
-                  "_blank"
-                )
-              }
+              onClick={() => handlePlatformShare("twitter")}
               className="flex items-center gap-2 px-4 py-2 bg-blue-500/50 rounded-xl text-blue-300 hover:bg-blue-500 hover:text-white transition-all"
             >
               <Twitter className="size-4" />
               Twitter
             </button>
             <button
-              onClick={() =>
-                window.open(
-                  `https://www.facebook.com/sharer/sharer.php?u=https://example.com&quote=Prediction:%20${result?.prediction}%0AConfidence:%20${result?.confidence}%25%0AReasons:%0A${result?.reasons.join(
-                    "%0A"
-                  )}`,
-                  "_blank"
-                )
-              }
+              onClick={() => handlePlatformShare("facebook")}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600/50 rounded-xl text-blue-300 hover:bg-blue-600 hover:text-white transition-all"
             >
               <Facebook className="size-4" />
               Facebook
             </button>
             <button
-              onClick={() =>
-                window.open(
-                  `https://www.linkedin.com/shareArticle?mini=true&url=https://example.com&title=Prediction:%20${result?.prediction}%0AConfidence:%20${result?.confidence}%25%0AReasons:%0A${result?.reasons.join(
-                    "%0A"
-                  )}`,
-                  "_blank"
-                )
-              }
+              onClick={() => handlePlatformShare("linkedin")}
               className="flex items-center gap-2 px-4 py-2 bg-blue-700/50 rounded-xl text-blue-300 hover:bg-blue-700 hover:text-white transition-all"
             >
               <Linkedin className="size-4" />
               LinkedIn
             </button>
             <button
-              onClick={() =>
-                window.open(
-                  `mailto:?subject=Text%20Analysis%20Result&body=Prediction:%20${result?.prediction}%0AConfidence:%20${result?.confidence}%25%0AReasons:%0A${result?.reasons.join(
-                    "%0A"
-                  )}`,
-                  "_blank"
-                )
-              }
+              onClick={() => handlePlatformShare("email")}
               className="flex items-center gap-2 px-4 py-2 bg-gray-500/50 rounded-xl text-gray-300 hover:bg-gray-500 hover:text-white transition-all"
             >
               <MessageCircle className="size-4" />

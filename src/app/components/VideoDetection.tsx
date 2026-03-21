@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Upload, AlertTriangle, CheckCircle, Loader2, Video, Layers, Share2, Twitter, Facebook, Linkedin, MessageCircle, Copy, Check } from "lucide-react";
+import { Upload, AlertTriangle, CheckCircle, Loader2, Video, Layers, Link as LinkIcon, Twitter, Facebook, Linkedin, MessageCircle, Copy } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
-import { analyzeVideo } from "../lib/api";
+import { analyzeVideo, analyzeVideoUrl } from "../lib/api";
 
 type AnalysisResult = {
   prediction: "FAKE" | "REAL";
@@ -12,17 +12,21 @@ type AnalysisResult = {
 };
 
 export default function VideoDetection() {
+  const [inputMode, setInputMode] = useState<"file" | "link">("file");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [videoUrl, setVideoUrl] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [shareNotice, setShareNotice] = useState("");
   const [error, setError] = useState("");
 
   const handleFileChange = (file: File) => {
     if (file && file.type.startsWith("video/")) {
       setSelectedFile(file);
+      setVideoUrl("");
       setResult(null);
       setError("");
     }
@@ -36,14 +40,18 @@ export default function VideoDetection() {
   };
 
   const handleAnalyze = async () => {
-    if (!selectedFile) return;
+    if (inputMode === "file" && !selectedFile) return;
+    if (inputMode === "link" && !videoUrl.trim()) return;
 
     setIsAnalyzing(true);
     setResult(null);
     setError("");
 
     try {
-      const analysis = await analyzeVideo(selectedFile);
+      const analysis =
+        inputMode === "file"
+          ? await analyzeVideo(selectedFile as File)
+          : await analyzeVideoUrl(videoUrl.trim());
       setResult(analysis);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to analyze video");
@@ -66,6 +74,54 @@ export default function VideoDetection() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const getShareMessage = () => {
+    const source = inputMode === "link" && videoUrl.trim() ? "\nSource: User-provided video link" : "";
+    return `VeritasAI Video Detection Result:\nPrediction: ${result?.prediction}\nConfidence: ${result?.confidence}%\nDeepfake Score: ${result?.deepfakeScore ?? 0}%${source}`;
+  };
+
+  const handlePlatformShare = (platform: "twitter" | "facebook" | "linkedin" | "email") => {
+    if (!result) return;
+
+    const message = getShareMessage();
+    const sourceUrl = "https://example.com/video-detection-result";
+
+    const encodedMessage = encodeURIComponent(message);
+    const encodedSourceUrl = encodeURIComponent(sourceUrl);
+
+    let shareUrl = "";
+    if (platform === "twitter") {
+      shareUrl = `https://twitter.com/intent/tweet?text=${encodedMessage}`;
+    } else if (platform === "facebook") {
+      shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodedSourceUrl}&quote=${encodedMessage}`;
+    } else if (platform === "linkedin") {
+      shareUrl = `https://www.linkedin.com/feed/?shareActive=true&text=${encodedMessage}`;
+    } else {
+      shareUrl = `mailto:?subject=Video%20Detection%20Result&body=${encodedMessage}`;
+    }
+
+    if (platform === "email") {
+      window.location.href = shareUrl;
+    } else {
+      window.open(shareUrl, "_blank", "noopener,noreferrer");
+    }
+
+    navigator.clipboard.writeText(message).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+
+      if (platform === "facebook" || platform === "linkedin") {
+        setShareNotice("This platform may block auto-filled text. Your preset message was copied; paste it in the share box.");
+      } else {
+        setShareNotice("Preset message drafted and copied to clipboard.");
+      }
+
+      setTimeout(() => setShareNotice(""), 5000);
+    }).catch(() => {
+      setShareNotice("Share draft opened. Clipboard permission was denied, so copy manually if needed.");
+      setTimeout(() => setShareNotice(""), 5000);
+    });
+  };
+
   return (
     <div className="space-y-6">
       {/* Upload Section */}
@@ -77,77 +133,128 @@ export default function VideoDetection() {
           <h3 className="text-xl font-semibold text-white">Video Detection</h3>
         </div>
 
-        <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setIsDragging(true);
-          }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleDrop}
-          className={`border-2 border-dashed rounded-xl p-12 text-center transition-all duration-300 ${
-            isDragging
-              ? "border-cyan-500 bg-cyan-500/10 scale-[1.02]"
-              : "border-gray-600 bg-gray-900/50 hover:border-gray-500"
-          }`}
-        >
-          {selectedFile ? (
-            <div className="space-y-4">
-              <div className="relative inline-block">
-                <div className="p-8 bg-gray-800/50 rounded-xl border border-gray-700">
-                  <Video className="size-16 mx-auto text-cyan-400" />
-                </div>
-                {result && showHeatmap && (
-                  <div className="absolute inset-0 bg-gradient-to-br from-red-500/40 via-yellow-500/30 to-transparent rounded-xl mix-blend-multiply pointer-events-none">
-                    <div className="absolute top-1/4 right-1/3 size-16 bg-red-500/60 blur-2xl rounded-full"></div>
-                    <div className="absolute bottom-1/3 left-1/4 size-20 bg-orange-500/50 blur-2xl rounded-full"></div>
+        <div className="mb-4 inline-flex rounded-xl border border-gray-700/60 bg-gray-900/60 p-1">
+          <button
+            onClick={() => {
+              setInputMode("file");
+              setVideoUrl("");
+              setResult(null);
+              setError("");
+            }}
+            className={`px-4 py-2 text-sm rounded-lg transition-all ${
+              inputMode === "file"
+                ? "bg-cyan-600 text-white"
+                : "text-gray-300 hover:bg-gray-800"
+            }`}
+          >
+            Upload File
+          </button>
+          <button
+            onClick={() => {
+              setInputMode("link");
+              setSelectedFile(null);
+              setResult(null);
+              setError("");
+            }}
+            className={`px-4 py-2 text-sm rounded-lg transition-all ${
+              inputMode === "link"
+                ? "bg-cyan-600 text-white"
+                : "text-gray-300 hover:bg-gray-800"
+            }`}
+          >
+            Video Link
+          </button>
+        </div>
+
+        {inputMode === "file" ? (
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={handleDrop}
+            className={`border-2 border-dashed rounded-xl p-12 text-center transition-all duration-300 ${
+              isDragging
+                ? "border-cyan-500 bg-cyan-500/10 scale-[1.02]"
+                : "border-gray-600 bg-gray-900/50 hover:border-gray-500"
+            }`}
+          >
+            {selectedFile ? (
+              <div className="space-y-4">
+                <div className="relative inline-block">
+                  <div className="p-8 bg-gray-800/50 rounded-xl border border-gray-700">
+                    <Video className="size-16 mx-auto text-cyan-400" />
                   </div>
+                  {result && showHeatmap && (
+                    <div className="absolute inset-0 bg-gradient-to-br from-red-500/40 via-yellow-500/30 to-transparent rounded-xl mix-blend-multiply pointer-events-none">
+                      <div className="absolute top-1/4 right-1/3 size-16 bg-red-500/60 blur-2xl rounded-full"></div>
+                      <div className="absolute bottom-1/3 left-1/4 size-20 bg-orange-500/50 blur-2xl rounded-full"></div>
+                    </div>
+                  )}
+                </div>
+                <p className="text-lg text-gray-300">{selectedFile.name}</p>
+                <p className="text-sm text-gray-500">
+                  {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB
+                </p>
+                {result && (
+                  <button
+                    onClick={() => setShowHeatmap(!showHeatmap)}
+                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
+                      showHeatmap
+                        ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/30"
+                        : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                    }`}
+                  >
+                    <Layers className="size-4" />
+                    {showHeatmap ? "Hide Heatmap" : "Show Heatmap"}
+                  </button>
                 )}
               </div>
-              <p className="text-lg text-gray-300">{selectedFile.name}</p>
-              <p className="text-sm text-gray-500">
-                {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB
-              </p>
-              {result && (
-                <button
-                  onClick={() => setShowHeatmap(!showHeatmap)}
-                  className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
-                    showHeatmap
-                      ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/30"
-                      : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                  }`}
-                >
-                  <Layers className="size-4" />
-                  {showHeatmap ? "Hide Heatmap" : "Show Heatmap"}
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <Upload className="size-16 mx-auto text-gray-500" />
-              <div>
-                <p className="text-lg text-gray-300 mb-2">
-                  Drag and drop a video here
-                </p>
-                <p className="text-sm text-gray-500">or</p>
+            ) : (
+              <div className="space-y-4">
+                <Upload className="size-16 mx-auto text-gray-500" />
+                <div>
+                  <p className="text-lg text-gray-300 mb-2">
+                    Drag and drop a video here
+                  </p>
+                  <p className="text-sm text-gray-500">or</p>
+                </div>
+                <label className="inline-block px-6 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg cursor-pointer transition-colors">
+                  Browse Files
+                  <input
+                    type="file"
+                    accept="video/*"
+                    onChange={(e) =>
+                      e.target.files && handleFileChange(e.target.files[0])
+                    }
+                    className="hidden"
+                  />
+                </label>
               </div>
-              <label className="inline-block px-6 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg cursor-pointer transition-colors">
-                Browse Files
-                <input
-                  type="file"
-                  accept="video/*"
-                  onChange={(e) =>
-                    e.target.files && handleFileChange(e.target.files[0])
-                  }
-                  className="hidden"
-                />
-              </label>
+            )}
+          </div>
+        ) : (
+          <div className="border border-gray-700 bg-gray-900/50 rounded-xl p-6 space-y-4">
+            <div className="relative">
+              <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-5 text-gray-500" />
+              <input
+                type="url"
+                value={videoUrl}
+                onChange={(e) => setVideoUrl(e.target.value)}
+                placeholder="https://www.youtube.com/watch?v=... or direct .mp4 link"
+                className="w-full pl-11 pr-4 py-3 bg-gray-900 border border-gray-700 rounded-xl text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+              />
             </div>
-          )}
-        </div>
+            <p className="text-sm text-gray-500">
+              Supports YouTube links and direct public video files (for example .mp4/.mov/.webm).
+            </p>
+          </div>
+        )}
 
         <button
           onClick={handleAnalyze}
-          disabled={!selectedFile || isAnalyzing}
+          disabled={(inputMode === "file" ? !selectedFile : !videoUrl.trim()) || isAnalyzing}
           className="mt-4 px-6 py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 text-white font-medium rounded-xl transition-all shadow-lg shadow-cyan-500/30 hover:shadow-cyan-500/50 hover:scale-[1.02] disabled:scale-100 disabled:shadow-none"
         >
           {isAnalyzing ? "Analyzing..." : "Analyze Video"}
@@ -341,43 +448,38 @@ export default function VideoDetection() {
                 <Copy className="size-4" />
                 {copied ? "Copied!" : "Copy to Clipboard"}
               </button>
-              <a
-                href={`https://twitter.com/intent/tweet?text=Video%20Detection%20Result:%20${result?.prediction}%20with%20${result?.confidence}%25%20confidence%20and%20${result?.deepfakeScore}%25%20deepfake%20score.`}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                onClick={() => handlePlatformShare("twitter")}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all bg-blue-500 text-white hover:bg-blue-600"
               >
                 <Twitter className="size-4" />
                 Share on Twitter
-              </a>
-              <a
-                href={`https://www.facebook.com/sharer/sharer.php?u=https://example.com/video-detection-result&quote=Video%20Detection%20Result:%20${result?.prediction}%20with%20${result?.confidence}%25%20confidence%20and%20${result?.deepfakeScore}%25%20deepfake%20score.`}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                onClick={() => handlePlatformShare("facebook")}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all bg-blue-600 text-white hover:bg-blue-700"
               >
                 <Facebook className="size-4" />
                 Share on Facebook
-              </a>
-              <a
-                href={`https://www.linkedin.com/shareArticle?mini=true&url=https://example.com/video-detection-result&title=Video%20Detection%20Result&summary=Video%20Detection%20Result:%20${result?.prediction}%20with%20${result?.confidence}%25%20confidence%20and%20${result?.deepfakeScore}%25%20deepfake%20score.&source=LinkedIn`}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                onClick={() => handlePlatformShare("linkedin")}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all bg-blue-700 text-white hover:bg-blue-800"
               >
                 <Linkedin className="size-4" />
                 Share on LinkedIn
-              </a>
-              <a
-                href={`mailto:?subject=Video%20Detection%20Result&body=Video%20Detection%20Result:%20${result?.prediction}%20with%20${result?.confidence}%25%20confidence%20and%20${result?.deepfakeScore}%25%20deepfake%20score.`}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                onClick={() => handlePlatformShare("email")}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all bg-gray-500 text-white hover:bg-gray-600"
               >
                 <MessageCircle className="size-4" />
                 Share via Email
-              </a>
+              </button>
             </div>
+            {shareNotice && (
+              <p className="mt-3 text-sm text-cyan-300">{shareNotice}</p>
+            )}
           </div>
         </motion.div>
       )}

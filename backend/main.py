@@ -30,6 +30,11 @@ except ImportError:
     BeautifulSoup = None
 
 try:
+    import yt_dlp  # pyright: ignore[reportMissingImports,reportMissingModuleSource]
+except ImportError:
+    yt_dlp = None
+
+try:
     from transformers import pipeline  # pyright: ignore[reportMissingImports]
 except ImportError:
     pipeline = None
@@ -102,6 +107,7 @@ SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 VIDEO_FRAME_LIMIT = max(10, min(20, int(os.getenv("VIDEO_FRAME_LIMIT", "20"))))
 VIDEO_FRAME_FPS = float(os.getenv("VIDEO_FRAME_FPS", "2.0"))
 VIDEO_FACE_LIMIT = int(os.getenv("VIDEO_FACE_LIMIT", "64"))
+VIDEO_URL_MAX_BYTES = int(os.getenv("VIDEO_URL_MAX_BYTES", str(250 * 1024 * 1024)))
 DEFAULT_XCEPTION_WEIGHTS = Path(__file__).resolve().parent / "models" / "faceforensics_xception.pth"
 
 FAKE_CUE_KEYWORDS = {
@@ -195,6 +201,10 @@ class TextAnalysisRequest(BaseModel):
 
 
 class UrlAnalysisRequest(BaseModel):
+    url: str = Field(min_length=1)
+
+
+class VideoUrlAnalysisRequest(BaseModel):
     url: str = Field(min_length=1)
 
 
@@ -459,12 +469,60 @@ def _load_video_model() -> tuple[Any, Any]:
         else:
             state_dict = checkpoint
 
-        cleaned = {
+        base_cleaned = {
             key.replace("module.", "", 1) if key.startswith("module.") else key: value
             for key, value in state_dict.items()
         }
 
-        model.load_state_dict(cleaned, strict=False)
+        candidate_dicts: List[Dict[str, Any]] = [base_cleaned]
+        candidate_dicts.append(
+            {
+                key.replace("model.", "", 1) if key.startswith("model.") else key: value
+                for key, value in base_cleaned.items()
+            }
+        )
+        candidate_dicts.append(
+            {
+                key.replace("model.model.", "", 1) if key.startswith("model.model.") else key: value
+                for key, value in base_cleaned.items()
+            }
+        )
+        candidate_dicts.append(
+            {
+                key if key.startswith("model.") else f"model.{key}": value
+                for key, value in base_cleaned.items()
+            }
+        )
+
+        best_candidate: Optional[Dict[str, Any]] = None
+        best_match_count = -1
+        model_keys = set(model.state_dict().keys())
+
+        for candidate in candidate_dicts:
+            matched = sum(1 for key in candidate.keys() if key in model_keys)
+            if matched > best_match_count:
+                best_match_count = matched
+                best_candidate = candidate
+
+        if best_candidate is None:
+            raise RuntimeError("Unable to parse checkpoint state dict for Xception model")
+
+        load_result = model.load_state_dict(best_candidate, strict=False)
+        total_model_keys = max(len(model_keys), 1)
+        coverage = (best_match_count / total_model_keys) * 100.0
+
+        if coverage < 70.0:
+            raise RuntimeError(
+                f"Xception checkpoint mismatch: only {coverage:.1f}% keys matched model architecture"
+            )
+
+        logger.info(
+            "Loaded video checkpoint with %.1f%% key coverage (%s missing, %s unexpected)",
+            coverage,
+            len(load_result.missing_keys),
+            len(load_result.unexpected_keys),
+        )
+
         model.eval()
 
         preprocess = transforms.Compose(
@@ -660,7 +718,14 @@ def _score_deepfake_faces(face_images: List[Any]) -> float:
     if not fake_probs:
         raise RuntimeError("Model produced empty predictions")
 
-    return float(sum(fake_probs) / len(fake_probs))
+    average_fake = float(sum(fake_probs) / len(fake_probs))
+    spread = max(fake_probs) - min(fake_probs)
+
+    # Guard against degenerate near-constant outputs from misconfigured checkpoints.
+    if len(fake_probs) >= 8 and spread < 0.02 and abs(average_fake - 0.5) < 0.05:
+        raise RuntimeError("Video model produced degenerate probabilities near 0.5")
+
+    return average_fake
 
 
 def _build_video_reasons(fake_probability: float, frame_count: int, face_count: int) -> List[str]:
@@ -967,6 +1032,163 @@ def _short_url_explanation(prediction: Prediction, trust_score: int, clickbait_c
     )
 
 
+def _is_youtube_host(hostname: str) -> bool:
+    host = hostname.lower()
+    return (
+        host.endswith("youtube.com")
+        or host.endswith("youtu.be")
+        or host.endswith("youtube-nocookie.com")
+    )
+
+
+def _download_video_from_youtube(url: str) -> tuple[str, bytes]:
+    if yt_dlp is None:
+        raise RuntimeError("yt-dlp is not installed")
+
+    with tempfile.TemporaryDirectory(prefix="veritas_yt_") as temp_dir:
+        output_template = str(Path(temp_dir) / "%(id)s.%(ext)s")
+
+        ydl_opts = {
+            "format": "best[ext=mp4][acodec!=none][vcodec!=none]/best[ext=mp4]/best",
+            "outtmpl": output_template,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "retries": 2,
+            "socket_timeout": 20,
+            "merge_output_format": "mp4",
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info is None:
+                raise RuntimeError("Could not extract YouTube video metadata")
+
+            if "entries" in info and info["entries"]:
+                info = info["entries"][0]
+
+            downloaded_path = Path(ydl.prepare_filename(info))
+            if not downloaded_path.exists():
+                matches = sorted(Path(temp_dir).glob("*"), key=lambda p: p.stat().st_size, reverse=True)
+                if not matches:
+                    raise RuntimeError("Unable to locate downloaded YouTube video")
+                downloaded_path = matches[0]
+
+        payload = downloaded_path.read_bytes()
+        if len(payload) > VIDEO_URL_MAX_BYTES:
+            max_mb = VIDEO_URL_MAX_BYTES / (1024 * 1024)
+            raise HTTPException(status_code=413, detail=f"Video is too large. Maximum supported size is {max_mb:.0f} MB")
+
+        filename = downloaded_path.name or "youtube-video.mp4"
+        return filename, payload
+
+
+def _download_video_from_url(url: str) -> tuple[str, bytes]:
+    _require_url_dependencies()
+    normalized_url = _normalize_url(url)
+
+    parsed = urlparse(normalized_url)
+    if _is_youtube_host(parsed.netloc):
+        return _download_video_from_youtube(normalized_url)
+
+    response = requests.get(
+        normalized_url,
+        timeout=20,
+        allow_redirects=True,
+        stream=True,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+            )
+        },
+    )
+    response.raise_for_status()
+
+    content_type = (response.headers.get("content-type") or "").lower()
+    if content_type and "video" not in content_type:
+        raise HTTPException(status_code=400, detail="Provided URL does not appear to be a direct video resource")
+
+    payload = response.content
+    if not payload:
+        raise HTTPException(status_code=400, detail="Video URL returned empty content")
+
+    if len(payload) > VIDEO_URL_MAX_BYTES:
+        max_mb = VIDEO_URL_MAX_BYTES / (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Video is too large. Maximum supported size is {max_mb:.0f} MB")
+
+    parsed = urlparse(response.url)
+    filename = Path(parsed.path).name or "linked-video.mp4"
+    return filename, payload
+
+
+def _analyze_video_payload(payload: bytes, filename: str) -> AnalysisResponse:
+    suffix = Path(filename or "uploaded-video.mp4").suffix or ".mp4"
+
+    with tempfile.TemporaryDirectory(prefix="veritas_video_") as temp_dir:
+        source_path = Path(temp_dir) / f"input{suffix}"
+        frame_dir = Path(temp_dir) / "frames"
+        frame_dir.mkdir(parents=True, exist_ok=True)
+
+        if not payload:
+            raise HTTPException(status_code=400, detail="Uploaded video file is empty")
+
+        source_path.write_bytes(payload)
+
+        try:
+            frame_paths = _extract_video_frames(str(source_path), str(frame_dir))
+            if not frame_paths:
+                raise HTTPException(
+                    status_code=422,
+                    detail="No frames could be extracted from this video. Try MP4/H.264 or a shorter clip.",
+                )
+
+            face_crops = _extract_face_crops(frame_paths)
+            if not face_crops:
+                raise HTTPException(
+                    status_code=422,
+                    detail="No faces were detected in sampled frames. Upload a clearer face-focused video.",
+                )
+
+            fake_probability = _score_deepfake_faces(face_crops)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Video analysis failed: %s", exc)
+
+            readiness = _video_readiness()
+            if not readiness.ready:
+                missing = ", ".join(readiness.missing)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Video pipeline is not ready. Missing: {missing}",
+                ) from exc
+
+            exc_message = str(exc).lower()
+            if "checkpoint mismatch" in exc_message or "degenerate probabilities" in exc_message:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Video model configuration issue detected. Please verify FaceForensics++ Xception weights.",
+                ) from exc
+
+            raise HTTPException(
+                status_code=422,
+                detail="Video could not be analyzed. Try a shorter, clearer video with visible faces.",
+            ) from exc
+
+    deepfake_score = int(round(fake_probability * 100))
+    prediction: Prediction = "FAKE" if fake_probability >= 0.5 else "REAL"
+    confidence = int(round(max(fake_probability, 1.0 - fake_probability) * 100))
+    confidence = max(1, min(99, confidence))
+
+    return AnalysisResponse(
+        prediction=prediction,
+        confidence=confidence,
+        reasons=_build_video_reasons(fake_probability, len(frame_paths), len(face_crops)),
+        deepfakeScore=deepfake_score,
+    )
+
+
 def _push_history(item_type: AnalysisType, content: str, result: AnalysisResponse) -> None:
     history_id = str(uuid.uuid4())
     history_item = {
@@ -1246,64 +1468,27 @@ async def analyze_video(file: UploadFile = File(...)) -> AnalysisResponse:
     if not file.content_type or not file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="Please upload a valid video file")
 
-    suffix = Path(file.filename or "uploaded-video.mp4").suffix or ".mp4"
-    with tempfile.TemporaryDirectory(prefix="veritas_video_") as temp_dir:
-        source_path = Path(temp_dir) / f"input{suffix}"
-        frame_dir = Path(temp_dir) / "frames"
-        frame_dir.mkdir(parents=True, exist_ok=True)
-
-        payload = await file.read()
-        if not payload:
-            raise HTTPException(status_code=400, detail="Uploaded video file is empty")
-
-        source_path.write_bytes(payload)
-
-        try:
-            frame_paths = _extract_video_frames(str(source_path), str(frame_dir))
-            if not frame_paths:
-                raise HTTPException(
-                    status_code=422,
-                    detail="No frames could be extracted from this video. Try MP4/H.264 or a shorter clip.",
-                )
-
-            face_crops = _extract_face_crops(frame_paths)
-            if not face_crops:
-                raise HTTPException(
-                    status_code=422,
-                    detail="No faces were detected in sampled frames. Upload a clearer face-focused video.",
-                )
-
-            fake_probability = _score_deepfake_faces(face_crops)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.exception("Video analysis failed: %s", exc)
-
-            readiness = _video_readiness()
-            if not readiness.ready:
-                missing = ", ".join(readiness.missing)
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"Video pipeline is not ready. Missing: {missing}",
-                ) from exc
-
-            raise HTTPException(
-                status_code=422,
-                detail="Video could not be analyzed. Try a shorter, clearer video with visible faces.",
-            ) from exc
-
-    deepfake_score = int(round(fake_probability * 100))
-    prediction: Prediction = "FAKE" if fake_probability >= 0.5 else "REAL"
-    confidence = int(round(max(fake_probability, 1.0 - fake_probability) * 100))
-    confidence = max(1, min(99, confidence))
-
-    result = AnalysisResponse(
-        prediction=prediction,
-        confidence=confidence,
-        reasons=_build_video_reasons(fake_probability, len(frame_paths), len(face_crops)),
-        deepfakeScore=deepfake_score,
-    )
+    payload = await file.read()
+    result = _analyze_video_payload(payload, file.filename or "uploaded-video.mp4")
     _push_history("video", file.filename or "uploaded-video", result)
+    return result
+
+
+@app.post("/api/analyze/video-url", response_model=AnalysisResponse)
+def analyze_video_url(payload: VideoUrlAnalysisRequest) -> AnalysisResponse:
+    try:
+        filename, video_payload = _download_video_from_url(payload.url)
+        result = _analyze_video_payload(video_payload, filename)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Video URL analysis failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to analyze video from this URL. Use a direct link to a downloadable video file.",
+        ) from exc
+
+    _push_history("video", payload.url, result)
     return result
 
 
