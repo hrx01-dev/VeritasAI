@@ -10,6 +10,25 @@ type AnalysisResult = {
   reasons: string[];
 };
 
+function getCuteReaction(prediction: "FAKE" | "REAL", confidence: number): string {
+  const fakeMessages = [
+    "Uh-oh, this one is giving drama llama energy. Proceed with caution.",
+    "Our truth detector raised an eyebrow and spilled its tea.",
+    "This claim looks sus. Even my coffee paused for a second.",
+    "Red flag parade detected. Cute alert, serious warning.",
+  ];
+
+  const realMessages = [
+    "Green light vibes. This one looks pretty legit.",
+    "Truth mode: activated. The facts understood the assignment.",
+    "Clean and credible. My inner detective is doing a happy dance.",
+    "Looks solid. Gold star for this content.",
+  ];
+
+  const messages = prediction === "FAKE" ? fakeMessages : realMessages;
+  return messages[confidence % messages.length];
+}
+
 export default function TextAnalysis() {
   const [inputText, setInputText] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -40,6 +59,10 @@ export default function TextAnalysis() {
         { name: "Uncertainty", value: 100 - result.confidence },
       ]
     : [];
+
+  const cuteReaction = result
+    ? getCuteReaction(result.prediction, result.confidence)
+    : "";
 
   const handleCopy = () => {
     navigator.clipboard.writeText(
@@ -179,6 +202,11 @@ export default function TextAnalysis() {
                   </div>
                 </div>
               </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-gray-700/60 bg-black/30 p-4">
+              <p className="text-xs uppercase tracking-wide text-gray-400">Cute Verdict</p>
+              <p className="mt-1 text-sm text-gray-200">{cuteReaction}</p>
             </div>
 
             {/* Confidence Bar */}

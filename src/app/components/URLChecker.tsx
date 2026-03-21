@@ -8,6 +8,11 @@ type AnalysisResult = {
   prediction: "FAKE" | "REAL";
   confidence: number;
   reasons: string[];
+  trustScore?: number;
+  domainQualityScore?: number;
+  keywordRiskScore?: number;
+  shortExplanation?: string;
+  badge?: "SAFE" | "NOT_SAFE";
 };
 
 export default function URLChecker() {
@@ -149,6 +154,17 @@ export default function URLChecker() {
                   >
                     {result.prediction}
                   </p>
+                  {result.badge && (
+                    <span
+                      className={`mt-2 inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${
+                        result.badge === "SAFE"
+                          ? "bg-green-500/20 text-green-300 border border-green-500/40"
+                          : "bg-red-500/20 text-red-300 border border-red-500/40"
+                      }`}
+                    >
+                      {result.badge === "SAFE" ? "SAFE" : "NOT SAFE"}
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -205,6 +221,27 @@ export default function URLChecker() {
                 />
               </div>
             </div>
+
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-gray-700/40 bg-black/20 p-3">
+                <p className="text-xs text-gray-400">Trust Score</p>
+                <p className="text-xl font-semibold text-white">{result.trustScore ?? 0}/100</p>
+              </div>
+              <div className="rounded-xl border border-gray-700/40 bg-black/20 p-3">
+                <p className="text-xs text-gray-400">Domain Quality</p>
+                <p className="text-xl font-semibold text-white">{result.domainQualityScore ?? 0}/100</p>
+              </div>
+              <div className="rounded-xl border border-gray-700/40 bg-black/20 p-3">
+                <p className="text-xs text-gray-400">Keyword Risk</p>
+                <p className="text-xl font-semibold text-white">{result.keywordRiskScore ?? 0}/100</p>
+              </div>
+            </div>
+
+            {result.shortExplanation && (
+              <div className="mt-4 rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3">
+                <p className="text-sm text-cyan-100">{result.shortExplanation}</p>
+              </div>
+            )}
           </div>
 
           <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-gray-700/50 p-6 shadow-2xl shadow-black/20">

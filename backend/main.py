@@ -9,13 +9,25 @@ import subprocess
 import threading
 import tempfile
 import uuid
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
+
+try:
+    import requests  # pyright: ignore[reportMissingImports]
+except ImportError:
+    requests = None
+
+try:
+    from bs4 import BeautifulSoup  # pyright: ignore[reportMissingImports]
+except ImportError:
+    BeautifulSoup = None
 
 try:
     from transformers import pipeline  # pyright: ignore[reportMissingImports]
@@ -116,6 +128,34 @@ REAL_CUE_KEYWORDS = {
     "confirmed",
 }
 
+CLICKBAIT_KEYWORDS = {
+    "you won't believe",
+    "shocking",
+    "breaking",
+    "must see",
+    "gone wrong",
+    "secret",
+    "what happened next",
+    "this trick",
+    "guaranteed",
+    "exclusive",
+    "urgent",
+    "miracle",
+}
+
+SUSPICIOUS_TLDS = {
+    "zip",
+    "click",
+    "top",
+    "xyz",
+    "gq",
+    "work",
+    "party",
+    "review",
+    "country",
+    "stream",
+}
+
 
 class XceptionBinaryClassifier(nn.Module):
     def __init__(self) -> None:
@@ -164,6 +204,12 @@ class AnalysisResponse(BaseModel):
     reasons: List[str]
     manipulationScore: Optional[int] = None
     deepfakeScore: Optional[int] = None
+    visualization: Optional[str] = None
+    trustScore: Optional[int] = None
+    domainQualityScore: Optional[int] = None
+    keywordRiskScore: Optional[int] = None
+    shortExplanation: Optional[str] = None
+    badge: Optional[Literal["SAFE", "NOT_SAFE"]] = None
 
 
 class HistoryItem(BaseModel):
@@ -173,6 +219,15 @@ class HistoryItem(BaseModel):
     result: Prediction
     confidence: int
     timestamp: str
+    reasons: List[str] = Field(default_factory=list)
+    manipulationScore: Optional[int] = None
+    deepfakeScore: Optional[int] = None
+    trustScore: Optional[int] = None
+    domainQualityScore: Optional[int] = None
+    keywordRiskScore: Optional[int] = None
+    shortExplanation: Optional[str] = None
+    badge: Optional[Literal["SAFE", "NOT_SAFE"]] = None
+    visualization: Optional[str] = None
 
 
 class VideoReadinessResponse(BaseModel):
@@ -618,6 +673,300 @@ def _build_video_reasons(fake_probability: float, frame_count: int, face_count: 
     ]
 
 
+def _require_image_dependencies() -> None:
+    missing: List[str] = []
+    if cv2 is None:
+        missing.append("opencv-python")
+    if np is None:
+        missing.append("numpy")
+
+    if missing:
+        raise RuntimeError(f"Missing image dependencies: {', '.join(missing)}")
+
+
+def _compute_ela_map(image_bgr: Any, quality: int = 90) -> Any:
+    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(max(10, min(quality, 100)))]
+    ok, compressed = cv2.imencode(".jpg", image_bgr, encode_params)
+    if not ok:
+        raise RuntimeError("Failed to generate JPEG recompression for ELA")
+
+    recompressed = cv2.imdecode(compressed, cv2.IMREAD_COLOR)
+    if recompressed is None:
+        raise RuntimeError("Failed to decode recompressed image for ELA")
+
+    ela_diff = cv2.absdiff(image_bgr, recompressed)
+    ela_gray = cv2.cvtColor(ela_diff, cv2.COLOR_BGR2GRAY)
+    return cv2.normalize(ela_gray, None, 0, 255, cv2.NORM_MINMAX)
+
+
+def _compute_edge_map(image_bgr: Any) -> Any:
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 80, 180)
+    return cv2.GaussianBlur(edges, (3, 3), 0)
+
+
+def _build_image_visualization(image_bgr: Any, anomaly_map: Any) -> str:
+    heatmap = cv2.applyColorMap(anomaly_map, cv2.COLORMAP_JET)
+    overlay = cv2.addWeighted(image_bgr, 0.68, heatmap, 0.32, 0)
+
+    high_mask = cv2.threshold(anomaly_map, 210, 255, cv2.THRESH_BINARY)[1]
+    contours, _ = cv2.findContours(high_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for contour in contours:
+        if cv2.contourArea(contour) < 120:
+            continue
+        x, y, w, h = cv2.boundingRect(contour)
+        cv2.rectangle(overlay, (x, y), (x + w, y + h), (40, 40, 255), 2)
+
+    ok, png = cv2.imencode(".png", overlay)
+    if not ok:
+        raise RuntimeError("Failed to encode ELA/edge visualization")
+
+    encoded = base64.b64encode(png.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _analyze_image_integrity(image_bgr: Any) -> Dict[str, Any]:
+    ela_map = _compute_ela_map(image_bgr)
+    edge_map = _compute_edge_map(image_bgr)
+
+    combined = cv2.addWeighted(ela_map, 0.7, edge_map, 0.3, 0)
+    combined_norm = cv2.normalize(combined, None, 0, 255, cv2.NORM_MINMAX).astype("uint8")
+
+    ela_mean = float(np.mean(ela_map))
+    ela_peak = float(np.percentile(ela_map, 95))
+    edge_density = float(np.mean(edge_map > 0) * 100.0)
+
+    ela_mean_score = float(np.clip((ela_mean - 8.0) / 32.0, 0.0, 1.0) * 100.0)
+    ela_peak_score = float(np.clip((ela_peak - 26.0) / 90.0, 0.0, 1.0) * 100.0)
+    edge_anomaly_score = float(np.clip(abs(edge_density - 11.0) / 11.0, 0.0, 1.0) * 100.0)
+
+    manipulation_score = int(round((0.55 * ela_mean_score) + (0.30 * ela_peak_score) + (0.15 * edge_anomaly_score)))
+    manipulation_score = max(1, min(99, manipulation_score))
+
+    prediction: Prediction = "FAKE" if manipulation_score >= 50 else "REAL"
+    confidence = int(round(58 + (abs(manipulation_score - 50) * 0.82)))
+    confidence = max(55, min(99, confidence))
+
+    reasons = [
+        f"ELA average intensity measured {ela_mean:.1f}/255 after JPEG recompression consistency analysis.",
+        f"ELA peak anomaly reached {ela_peak:.1f}/255 in the top 5% of suspicious regions.",
+        f"Edge map density measured {edge_density:.1f}%, indicating {'irregular' if edge_anomaly_score > 45 else 'natural'} structural transitions.",
+        "Final score blends ELA and edge signals to estimate manipulation likelihood.",
+    ]
+
+    visualization = _build_image_visualization(image_bgr, combined_norm)
+    return {
+        "prediction": prediction,
+        "confidence": confidence,
+        "manipulationScore": manipulation_score,
+        "reasons": reasons,
+        "visualization": visualization,
+    }
+
+
+def _require_url_dependencies() -> None:
+    missing: List[str] = []
+    if requests is None:
+        missing.append("requests")
+    if BeautifulSoup is None:
+        missing.append("beautifulsoup4")
+
+    if missing:
+        raise RuntimeError(f"Missing URL dependencies: {', '.join(missing)}")
+
+
+def _normalize_url(raw_url: str) -> str:
+    candidate = raw_url.strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    if not re.match(r"^https?://", candidate, re.IGNORECASE):
+        candidate = f"https://{candidate}"
+
+    parsed = urlparse(candidate)
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Invalid URL format")
+
+    return candidate
+
+
+def _extract_visible_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "iframe", "svg"]):
+        tag.decompose()
+
+    body = soup.body or soup
+    text = body.get_text(" ", strip=True)
+    normalized = " ".join(text.split())
+    return normalized[:12000]
+
+
+def _fetch_page_content(url: str) -> Dict[str, Any]:
+    response = requests.get(
+        url,
+        timeout=10,
+        allow_redirects=True,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+            )
+        },
+    )
+    response.raise_for_status()
+
+    text = _extract_visible_text(response.text)
+    if len(text) < 120:
+        raise HTTPException(
+            status_code=422,
+            detail="Not enough readable text was found on this URL for reliable analysis.",
+        )
+
+    return {
+        "final_url": response.url,
+        "status_code": response.status_code,
+        "text": text,
+    }
+
+
+def _get_domain_age_days(domain: str) -> Optional[int]:
+    rdap_url = f"https://rdap.org/domain/{domain}"
+    try:
+        response = requests.get(rdap_url, timeout=8)
+        if response.status_code >= 400:
+            return None
+
+        payload = response.json()
+        for event in payload.get("events", []):
+            action = str(event.get("eventAction", "")).lower()
+            if action not in {"registration", "registered", "creation"}:
+                continue
+
+            event_date = event.get("eventDate")
+            if not event_date:
+                continue
+
+            normalized = str(event_date).replace("Z", "+00:00")
+            created_at = datetime.fromisoformat(normalized)
+            now = datetime.now(timezone.utc)
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+
+            age_days = (now - created_at).days
+            return max(0, age_days)
+    except Exception:
+        return None
+
+    return None
+
+
+def _score_domain_quality(domain: str, is_https: bool, age_days: Optional[int]) -> Dict[str, Any]:
+    score = 100
+    penalties: List[str] = []
+    labels: List[str] = []
+
+    if not is_https:
+        score -= 20
+        penalties.append("No HTTPS")
+
+    domain_lower = domain.lower()
+    parts = domain_lower.split(".")
+    tld = parts[-1] if parts else ""
+    second_level = parts[-2] if len(parts) > 1 else domain_lower
+
+    if tld in SUSPICIOUS_TLDS:
+        score -= 18
+        penalties.append(f"Risky TLD .{tld}")
+
+    hyphen_count = second_level.count("-")
+    if hyphen_count >= 2:
+        score -= 10
+        penalties.append("Excessive hyphens")
+
+    digits = sum(char.isdigit() for char in second_level)
+    digit_ratio = digits / max(len(second_level), 1)
+    if digit_ratio > 0.2:
+        score -= 12
+        penalties.append("High digit density in domain")
+
+    if len(domain_lower) > 35:
+        score -= 8
+        penalties.append("Unusually long domain")
+
+    subdomain_count = max(len(parts) - 2, 0)
+    if subdomain_count >= 3:
+        score -= 8
+        penalties.append("Many nested subdomains")
+
+    if "xn--" in domain_lower:
+        score -= 15
+        penalties.append("Punycode domain")
+
+    if age_days is None:
+        score -= 5
+        labels.append("Domain age unavailable")
+    elif age_days < 180:
+        score -= 25
+        penalties.append("Very new domain")
+    elif age_days < 365:
+        score -= 16
+        penalties.append("Recently registered domain")
+    elif age_days > 365 * 5:
+        score += 8
+        labels.append("Mature domain")
+    elif age_days > 365 * 2:
+        score += 4
+        labels.append("Established domain")
+
+    score = max(1, min(99, score))
+    return {
+        "score": score,
+        "penalties": penalties,
+        "labels": labels,
+    }
+
+
+def _clickbait_matches(text: str) -> List[str]:
+    lower = text.lower()
+    matches = [keyword for keyword in CLICKBAIT_KEYWORDS if keyword in lower]
+    return matches[:6]
+
+
+def _model_content_score(text: str) -> Dict[str, Any]:
+    classifier = _load_text_classifier()
+    model_output = classifier(
+        text,
+        candidate_labels=TEXT_LABELS,
+        hypothesis_template="This article is {}.",
+    )
+
+    labels = model_output.get("labels", [])
+    scores = model_output.get("scores", [])
+    score_map = {label: float(score) for label, score in zip(labels, scores)}
+    fake_score = score_map.get("fake news", 0.0)
+    real_score = score_map.get("real news", 0.0)
+
+    return {
+        "fake_score": fake_score,
+        "real_score": real_score,
+    }
+
+
+def _short_url_explanation(prediction: Prediction, trust_score: int, clickbait_count: int, domain_quality: int) -> str:
+    if prediction == "REAL":
+        return (
+            f"Marked as SAFE with trust score {trust_score}/100 because domain quality is {domain_quality}/100 "
+            f"and clickbait signals are {'low' if clickbait_count <= 1 else 'moderate'}."
+        )
+
+    return (
+        f"Marked as NOT SAFE with trust score {trust_score}/100 due to weaker domain quality "
+        f"({domain_quality}/100) and elevated clickbait/content risk."
+    )
+
+
 def _push_history(item_type: AnalysisType, content: str, result: AnalysisResponse) -> None:
     history_id = str(uuid.uuid4())
     history_item = {
@@ -627,6 +976,15 @@ def _push_history(item_type: AnalysisType, content: str, result: AnalysisRespons
         "result": result.prediction,
         "confidence": result.confidence,
         "timestamp": _now_utc_iso(),
+        "reasons": result.reasons,
+        "manipulationScore": result.manipulationScore,
+        "deepfakeScore": result.deepfakeScore,
+        "trustScore": result.trustScore,
+        "domainQualityScore": result.domainQualityScore,
+        "keywordRiskScore": result.keywordRiskScore,
+        "shortExplanation": result.shortExplanation,
+        "badge": result.badge,
+        "visualization": result.visualization,
     }
 
     ANALYSIS_HISTORY.insert(0, history_item)
@@ -663,6 +1021,15 @@ def _load_history() -> List[dict]:
                 "result": data.get("result", "REAL"),
                 "confidence": int(data.get("confidence", 0)),
                 "timestamp": data.get("timestamp", _now_utc_iso()),
+                "reasons": data.get("reasons", []),
+                "manipulationScore": data.get("manipulationScore"),
+                "deepfakeScore": data.get("deepfakeScore"),
+                "trustScore": data.get("trustScore"),
+                "domainQualityScore": data.get("domainQualityScore"),
+                "keywordRiskScore": data.get("keywordRiskScore"),
+                "shortExplanation": data.get("shortExplanation"),
+                "badge": data.get("badge"),
+                "visualization": data.get("visualization"),
             }
         )
 
@@ -756,26 +1123,88 @@ def analyze_text(payload: TextAnalysisRequest) -> AnalysisResponse:
         confidence=confidence,
         reasons=_build_text_reasons(prediction, confidence, payload.text),
     )
-    _push_history("text", payload.text[:120], result)
+    _push_history("text", payload.text[:5000], result)
     return result
 
 
 @app.post("/api/analyze/url", response_model=AnalysisResponse)
 def analyze_url(payload: UrlAnalysisRequest) -> AnalysisResponse:
-    result = _base_result(
-        payload.url,
-        fake_reasons=[
-            "Domain recently registered with suspicious hosting",
-            "Multiple redirects to unverified sources detected",
-            "Content farm patterns and clickbait indicators",
-            "Security posture appears inconsistent with trusted publishers",
-        ],
-        real_reasons=[
-            "Established domain with verified credentials",
-            "Direct routing to legitimate source",
-            "Professional journalistic standards observed",
-            "SSL encryption and security signals are consistent",
-        ],
+    try:
+        _require_url_dependencies()
+        normalized_url = _normalize_url(payload.url)
+        fetched = _fetch_page_content(normalized_url)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("URL fetch/extraction failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch or parse URL content right now. Please retry with another public page.",
+        ) from exc
+
+    final_url = fetched["final_url"]
+    extracted_text = fetched["text"]
+    parsed = urlparse(final_url)
+    domain = parsed.netloc.lower()
+    is_https = parsed.scheme.lower() == "https"
+
+    age_days = _get_domain_age_days(domain)
+    domain_meta = _score_domain_quality(domain, is_https, age_days)
+    domain_quality_score = int(domain_meta["score"])
+
+    clickbait = _clickbait_matches(extracted_text)
+    keyword_risk_score = int(min(len(clickbait) * 14, 98))
+
+    try:
+        model_scores = _model_content_score(extracted_text)
+    except Exception as exc:
+        logger.exception("URL content model inference failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Text detection model is unavailable for URL content analysis.",
+        ) from exc
+
+    fake_score = float(model_scores["fake_score"])
+    real_score = float(model_scores["real_score"])
+    content_trust = int(round(real_score * 100))
+
+    trust_score = int(
+        round(
+            (0.45 * content_trust)
+            + (0.40 * domain_quality_score)
+            + (0.15 * (100 - keyword_risk_score))
+        )
+    )
+    trust_score = max(1, min(99, trust_score))
+
+    prediction: Prediction = "REAL" if trust_score >= 60 else "FAKE"
+    confidence = int(round(56 + (abs(trust_score - 50) * 0.88)))
+    confidence = max(55, min(99, confidence))
+
+    age_text = (
+        f"{age_days} days" if age_days is not None else "unavailable"
+    )
+    clickbait_text = ", ".join(clickbait) if clickbait else "none detected"
+    domain_notes = domain_meta["penalties"] + domain_meta["labels"]
+    domain_note_text = "; ".join(domain_notes[:2]) if domain_notes else "No major domain red flags"
+
+    reasons = [
+        f"Fetched and extracted {len(extracted_text)} text characters from {final_url} for analysis.",
+        f"Content model scores: fake={fake_score * 100:.1f}%, real={real_score * 100:.1f}%.",
+        f"Domain checks: HTTPS={'yes' if is_https else 'no'}, age={age_text}, quality score={domain_quality_score}/100 ({domain_note_text}).",
+        f"Clickbait keyword scan: {clickbait_text}; keyword risk score={keyword_risk_score}/100.",
+        f"Final trust score={trust_score}/100 from weighted content, domain, and keyword checks.",
+    ]
+
+    result = AnalysisResponse(
+        prediction=prediction,
+        confidence=confidence,
+        reasons=reasons,
+        trustScore=trust_score,
+        domainQualityScore=domain_quality_score,
+        keywordRiskScore=keyword_risk_score,
+        shortExplanation=_short_url_explanation(prediction, trust_score, len(clickbait), domain_quality_score),
+        badge="SAFE" if prediction == "REAL" else "NOT_SAFE",
     )
     _push_history("url", payload.url, result)
     return result
@@ -786,24 +1215,28 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalysisResponse:
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload a valid image file")
 
-    await file.read()
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Uploaded image file is empty")
 
-    result = _base_result(
-        file.filename or "image",
-        fake_reasons=[
-            "AI-generated artifacts detected in pixel analysis",
-            "Metadata inconsistencies found",
-            "Image manipulation patterns identified",
-            "Unnatural lighting and shadow distribution",
-        ],
-        real_reasons=[
-            "No digital manipulation traces detected",
-            "Metadata aligns with capture time and location",
-            "Natural pixel distribution patterns",
-            "Authentic lighting and perspective geometry",
-        ],
-    )
-    result.manipulationScore = random.randint(55, 95) if result.prediction == "FAKE" else random.randint(8, 45)
+    try:
+        _require_image_dependencies()
+        np_payload = np.frombuffer(payload, dtype=np.uint8)
+        image_bgr = cv2.imdecode(np_payload, cv2.IMREAD_COLOR)
+        if image_bgr is None:
+            raise HTTPException(status_code=400, detail="Unable to decode image file. Please upload JPG or PNG.")
+
+        insights = _analyze_image_integrity(image_bgr)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Image analysis failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Image analysis pipeline is unavailable. Ensure OpenCV and NumPy are installed.",
+        ) from exc
+
+    result = AnalysisResponse(**insights)
     _push_history("image", file.filename or "uploaded-image", result)
     return result
 

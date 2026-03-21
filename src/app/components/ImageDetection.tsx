@@ -9,7 +9,26 @@ type AnalysisResult = {
   confidence: number;
   manipulationScore?: number;
   reasons: string[];
+  visualization?: string;
 };
+
+type LegendSignal = "low" | "medium" | "high" | "boxes";
+
+function getCuteImageReaction(
+  prediction: "FAKE" | "REAL",
+  confidence: number,
+  manipulationScore: number,
+): string {
+  if (prediction === "FAKE") {
+    if (confidence >= 90) return "Big yikes alert! This one looks heavily edited.";
+    if (manipulationScore >= 70) return "Hmm... spicy pixels detected. Likely manipulated.";
+    return "Tiny red flags are waving. This image may be altered.";
+  }
+
+  if (confidence >= 90) return "Looks clean and cozy. This image seems authentic.";
+  if (manipulationScore <= 25) return "Green vibes only. Very low manipulation signals.";
+  return "Pretty neat overall. No strong signs of tampering.";
+}
 
 export default function ImageDetection() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -18,6 +37,7 @@ export default function ImageDetection() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
+  const [activeLegendSignal, setActiveLegendSignal] = useState<LegendSignal | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
 
@@ -26,6 +46,8 @@ export default function ImageDetection() {
       setSelectedFile(file);
       setResult(null);
       setError("");
+      setShowHeatmap(false);
+      setActiveLegendSignal(null);
       const reader = new FileReader();
       reader.onloadend = () => {
         setPreview(reader.result as string);
@@ -47,6 +69,7 @@ export default function ImageDetection() {
     setIsAnalyzing(true);
     setResult(null);
     setError("");
+    setActiveLegendSignal(null);
 
     try {
       const analysis = await analyzeImage(selectedFile);
@@ -64,6 +87,14 @@ export default function ImageDetection() {
         { name: "Uncertainty", value: 100 - result.confidence },
       ]
     : [];
+
+  const cuteReaction = result
+    ? getCuteImageReaction(
+        result.prediction,
+        result.confidence,
+        result.manipulationScore ?? 0,
+      )
+    : "";
 
   const copyToClipboard = () => {
     const text = `Image Detection Result: ${result?.prediction} (${result?.confidence}%)`;
@@ -105,16 +136,41 @@ export default function ImageDetection() {
                   alt="Preview"
                   className="max-h-64 mx-auto rounded-xl shadow-lg"
                 />
-                {result && showHeatmap && (
-                  <div className="absolute inset-0 bg-gradient-to-br from-red-500/40 via-yellow-500/30 to-transparent rounded-xl mix-blend-multiply pointer-events-none">
-                    <div className="absolute top-1/4 right-1/3 size-16 bg-red-500/60 blur-2xl rounded-full"></div>
-                    <div className="absolute bottom-1/3 left-1/4 size-20 bg-orange-500/50 blur-2xl rounded-full"></div>
-                  </div>
+                {result?.visualization && showHeatmap && (
+                  <>
+                    <img
+                      src={result.visualization}
+                      alt="ELA and edge visualization"
+                      className={`absolute inset-0 size-full object-contain rounded-xl pointer-events-none transition-all duration-200 ${
+                        activeLegendSignal === "low"
+                          ? "brightness-110 saturate-125"
+                          : activeLegendSignal === "medium"
+                          ? "contrast-125 saturate-125"
+                          : activeLegendSignal === "high"
+                          ? "contrast-150 saturate-150"
+                          : ""
+                      }`}
+                    />
+                    {activeLegendSignal && (
+                      <div
+                        className={`absolute inset-0 rounded-xl pointer-events-none transition-all duration-200 ${
+                          activeLegendSignal === "low"
+                            ? "bg-cyan-400/15"
+                            : activeLegendSignal === "medium"
+                            ? "bg-amber-400/15"
+                            : activeLegendSignal === "high"
+                            ? "bg-red-500/20"
+                            : "bg-red-500/10"
+                        } ${activeLegendSignal === "boxes" ? "ring-2 ring-red-500/60" : ""}`}
+                      />
+                    )}
+                  </>
                 )}
               </div>
               <p className="text-sm text-gray-400">{selectedFile?.name}</p>
               {result && (
                 <button
+                  disabled={!result.visualization}
                   onClick={() => setShowHeatmap(!showHeatmap)}
                   className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
                     showHeatmap
@@ -123,7 +179,7 @@ export default function ImageDetection() {
                   }`}
                 >
                   <Layers className="size-4" />
-                  {showHeatmap ? "Hide Heatmap" : "Show Heatmap"}
+                  {showHeatmap ? "Hide ELA + Edge Map" : "Show ELA + Edge Map"}
                 </button>
               )}
             </div>
@@ -307,6 +363,10 @@ export default function ImageDetection() {
                 />
               </div>
             </div>
+
+            <div className="mt-5 rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3">
+              <p className="text-sm text-cyan-100">{cuteReaction}</p>
+            </div>
           </div>
 
           <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-gray-700/50 p-6 shadow-2xl shadow-black/20">
@@ -334,6 +394,94 @@ export default function ImageDetection() {
               ))}
             </ul>
           </div>
+
+          {result.visualization && (
+            <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-cyan-500/20 p-6 shadow-2xl shadow-black/20">
+              <h4 className="text-lg font-semibold text-white mb-2">
+                ELA + Edge Map Legend
+              </h4>
+              <p className="text-sm text-gray-400 mb-4">
+                Use this guide while toggling the overlay on the uploaded image.
+              </p>
+              <p className="text-xs text-cyan-300 mb-4">
+                Hover or click an item to emphasize that signal in the overlay preview.
+              </p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <button
+                  type="button"
+                  onMouseEnter={() => setActiveLegendSignal("low")}
+                  onMouseLeave={() => setActiveLegendSignal(null)}
+                  onFocus={() => setActiveLegendSignal("low")}
+                  onBlur={() => setActiveLegendSignal(null)}
+                  onClick={() =>
+                    setActiveLegendSignal((prev) => (prev === "low" ? null : "low"))
+                  }
+                  className={`w-full text-left flex items-center gap-3 p-3 rounded-lg bg-black/20 border transition-all ${
+                    activeLegendSignal === "low"
+                      ? "border-cyan-400/80 shadow-lg shadow-cyan-500/20"
+                      : "border-gray-700/40 hover:border-cyan-500/60"
+                  }`}
+                >
+                  <span className="size-4 rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" />
+                  <p className="text-sm text-gray-300">Low anomaly response (more consistent compression and edges)</p>
+                </button>
+                <button
+                  type="button"
+                  onMouseEnter={() => setActiveLegendSignal("medium")}
+                  onMouseLeave={() => setActiveLegendSignal(null)}
+                  onFocus={() => setActiveLegendSignal("medium")}
+                  onBlur={() => setActiveLegendSignal(null)}
+                  onClick={() =>
+                    setActiveLegendSignal((prev) => (prev === "medium" ? null : "medium"))
+                  }
+                  className={`w-full text-left flex items-center gap-3 p-3 rounded-lg bg-black/20 border transition-all ${
+                    activeLegendSignal === "medium"
+                      ? "border-amber-400/80 shadow-lg shadow-amber-500/20"
+                      : "border-gray-700/40 hover:border-amber-500/60"
+                  }`}
+                >
+                  <span className="size-4 rounded-full bg-gradient-to-r from-yellow-400 to-orange-500" />
+                  <p className="text-sm text-gray-300">Medium anomaly response (possible local edits or texture mismatch)</p>
+                </button>
+                <button
+                  type="button"
+                  onMouseEnter={() => setActiveLegendSignal("high")}
+                  onMouseLeave={() => setActiveLegendSignal(null)}
+                  onFocus={() => setActiveLegendSignal("high")}
+                  onBlur={() => setActiveLegendSignal(null)}
+                  onClick={() =>
+                    setActiveLegendSignal((prev) => (prev === "high" ? null : "high"))
+                  }
+                  className={`w-full text-left flex items-center gap-3 p-3 rounded-lg bg-black/20 border transition-all ${
+                    activeLegendSignal === "high"
+                      ? "border-red-400/80 shadow-lg shadow-red-500/20"
+                      : "border-gray-700/40 hover:border-red-500/60"
+                  }`}
+                >
+                  <span className="size-4 rounded-full bg-gradient-to-r from-red-500 to-rose-700" />
+                  <p className="text-sm text-gray-300">High anomaly response (strong ELA spikes and irregular edge behavior)</p>
+                </button>
+                <button
+                  type="button"
+                  onMouseEnter={() => setActiveLegendSignal("boxes")}
+                  onMouseLeave={() => setActiveLegendSignal(null)}
+                  onFocus={() => setActiveLegendSignal("boxes")}
+                  onBlur={() => setActiveLegendSignal(null)}
+                  onClick={() =>
+                    setActiveLegendSignal((prev) => (prev === "boxes" ? null : "boxes"))
+                  }
+                  className={`w-full text-left flex items-center gap-3 p-3 rounded-lg bg-black/20 border transition-all ${
+                    activeLegendSignal === "boxes"
+                      ? "border-red-500/80 shadow-lg shadow-red-600/20"
+                      : "border-gray-700/40 hover:border-red-500/60"
+                  }`}
+                >
+                  <span className="h-4 w-6 rounded-sm border-2 border-red-500 bg-red-500/10" />
+                  <p className="text-sm text-gray-300">Highlighted boxes mark concentrated suspicious regions</p>
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-gray-700/50 p-6 shadow-2xl shadow-black/20">
             <h4 className="text-lg font-semibold text-white mb-4">

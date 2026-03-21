@@ -24,6 +24,12 @@ export type AnalysisResult = {
   reasons: string[];
   manipulationScore?: number;
   deepfakeScore?: number;
+  visualization?: string;
+  trustScore?: number;
+  domainQualityScore?: number;
+  keywordRiskScore?: number;
+  shortExplanation?: string;
+  badge?: "SAFE" | "NOT_SAFE";
 };
 
 export type HistoryItem = {
@@ -33,6 +39,15 @@ export type HistoryItem = {
   result: Prediction;
   confidence: number;
   timestamp: string;
+  reasons?: string[];
+  manipulationScore?: number;
+  deepfakeScore?: number;
+  trustScore?: number;
+  domainQualityScore?: number;
+  keywordRiskScore?: number;
+  shortExplanation?: string;
+  badge?: "SAFE" | "NOT_SAFE";
+  visualization?: string;
 };
 
 async function readResponse<T>(response: Response): Promise<T> {
