@@ -60,53 +60,6 @@
     npx firebase-tools use --add
     ```
 
-  ## Deploy Backend To Railway (And Connect Frontend)
-
-  Your frontend is deployed on Firebase Hosting. To connect production API calls, deploy backend publicly and set `VITE_API_BASE_URL`.
-
-  1. Install Railway CLI:
-
-    ```bash
-    npm i -g @railway/cli
-    ```
-
-  2. Login and link project:
-
-    ```bash
-    railway login
-    railway link
-    ```
-
-  3. Create a Railway service named `veritasai-backend` and configure:
-
-    - Root Directory: `backend`
-    - Build Command: `pip install -r requirements.txt`
-    - Start Command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-
-  4. Deploy backend:
-
-    ```bash
-    npm run deploy:backend
-    ```
-
-  5. Copy your Railway backend URL from Railway dashboard, then set frontend production API URL:
-
-    ```bash
-    cp .env.production.example .env.production
-    ```
-
-    Then set:
-
-    ```bash
-    VITE_API_BASE_URL=https://<your-railway-url>
-    ```
-
-  6. Redeploy frontend hosting:
-
-    ```bash
-    npm run deploy:hosting
-    ```
-
   ## Firebase Setup
 
   Firebase app + Cloud Firestore are initialized in `src/app/lib/firebase.ts`.

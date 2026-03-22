@@ -8,9 +8,7 @@
     "dev": "vite",
     "preview": "vite preview",
     "deploy:hosting": "npm run build && npx firebase-tools deploy --only hosting",
-    "backend:local": "c:/Projects/VeritasAI/.venv/Scripts/python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000",
-    "deploy:backend": "npx @railway/cli up --service veritasai-backend",
-    "backend:url": "npx @railway/cli status --json"
+    "backend:local": "c:/Projects/VeritasAI/.venv/Scripts/python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
