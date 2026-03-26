@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Shield, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle2, Chrome } from "lucide-react";
+import { Shield, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle2, Chrome, Info } from "lucide-react";
 import { Link, useNavigate } from "react-router";
-import { signup as signupRequest } from "../lib/api";
+import { signup as signupRequest, login as loginRequest } from "../lib/api";
 import { signInWithGooglePopup } from "../lib/firebase";
+import BiometricVerification from "./BiometricVerification";
 
 export default function Signup() {
   const [formData, setFormData] = useState({
@@ -16,6 +17,9 @@ export default function Signup() {
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [acceptTerms, setAcceptTerms] = useState(false);
+  const [showBiometricVerification, setShowBiometricVerification] = useState(false);
+  const [isVerified, setIsVerified] = useState(false);
+  const [googleUnavailable, setGoogleUnavailable] = useState(false);
   const navigate = useNavigate();
 
   const saveLocalSession = (name: string, userEmail: string, token: string) => {
@@ -64,12 +68,31 @@ export default function Signup() {
       });
 
       saveLocalSession(auth.user.name, auth.user.email, auth.token);
-      navigate("/dashboard");
+      // Show biometric verification before navigating to dashboard
+      setShowBiometricVerification(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create account");
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleVerificationComplete = () => {
+    setIsVerified(true);
+    // Navigate to dashboard after verification
+    setTimeout(() => {
+      navigate("/dashboard");
+    }, 1500);
+  };
+
+  const handleVerificationCancel = () => {
+    setShowBiometricVerification(false);
+    // Clear local session on cancel
+    localStorage.removeItem("veritasai_authenticated");
+    localStorage.removeItem("veritasai_user");
+    localStorage.removeItem("veritasai_token");
+    setFormData({ name: "", email: "", password: "", confirmPassword: "" });
+    setError("Verification cancelled. Please try again.");
   };
 
   const handleGoogleSignup = async () => {
@@ -79,12 +102,63 @@ export default function Signup() {
     try {
       const credential = await signInWithGooglePopup();
       const user = credential.user;
-      const token = await user.getIdToken();
+      const firebaseToken = await user.getIdToken();
 
-      saveLocalSession(user.displayName || user.email?.split("@")[0] || "Google User", user.email || "", token);
-      navigate("/dashboard");
+      try {
+        // Try to register the user with the backend
+        const auth = await signupRequest({
+          name: user.displayName || user.email?.split("@")[0] || "Google User",
+          email: user.email || "",
+          password: firebaseToken,
+          confirm_password: firebaseToken,
+          accept_terms: true,
+        });
+
+        saveLocalSession(auth.user.name, auth.user.email, auth.token);
+        setShowBiometricVerification(true);
+      } catch (signupErr) {
+        // If user already exists, try to login instead
+        const errorMsg = signupErr instanceof Error ? signupErr.message : "";
+        if (errorMsg.includes("already exists")) {
+          try {
+            const auth = await loginRequest({
+              email: user.email || "",
+              password: firebaseToken,
+              remember_me: false,
+            });
+            saveLocalSession(auth.user.name, auth.user.email, auth.token);
+            setShowBiometricVerification(true);
+          } catch (loginErr) {
+            throw loginErr;
+          }
+        } else if (errorMsg.includes("Invalid Firebase token") || errorMsg.includes("token verification")) {
+          throw new Error(
+            "Backend cannot validate your Google account. Please ensure Firebase Admin SDK is properly configured on the server."
+          );
+        } else {
+          throw signupErr;
+        }
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Google sign-up failed");
+      let errorMessage = "Google sign-up failed";
+      const errorDetails = err instanceof Error ? err.message : "";
+      
+      // Check if this is a Firebase availability issue
+      const isFirebaseIssue = 
+        errorDetails.includes("temporarily unavailable") ||
+        errorDetails.includes("timed out") ||
+        errorDetails.includes("timeout") ||
+        errorDetails.includes("email/password instead") ||
+        errorDetails.includes("ERR_NAME_NOT_RESOLVED");
+
+      if (isFirebaseIssue) {
+        setGoogleUnavailable(true);
+        errorMessage = "Google sign-up is temporarily unavailable. Please use email and password to sign up instead.";
+      } else {
+        errorMessage = errorDetails || errorMessage;
+      }
+      
+      setError(errorMessage);
     } finally {
       setIsGoogleLoading(false);
     }
@@ -102,6 +176,14 @@ export default function Signup() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-900 flex items-center justify-center p-4 relative overflow-hidden">
+      {/* Show biometric verification when needed */}
+      {showBiometricVerification && (
+        <BiometricVerification
+          onVerificationComplete={handleVerificationComplete}
+          onCancel={handleVerificationCancel}
+        />
+      )}
+
       {/* Animated background */}
       <div className="absolute inset-0">
         <div className="absolute top-1/4 left-1/4 size-96 bg-cyan-500/5 rounded-full blur-3xl animate-pulse"></div>
@@ -257,24 +339,36 @@ export default function Signup() {
               </span>
             </div>
 
-            <button
-              type="button"
-              onClick={handleGoogleSignup}
-              disabled={isGoogleLoading || isLoading}
-              className="w-full py-3 bg-gray-800 hover:bg-gray-700 disabled:bg-gray-700 disabled:text-gray-500 text-gray-200 font-medium rounded-xl transition-all border border-gray-600 hover:border-gray-500 flex items-center justify-center gap-2"
-            >
-              {isGoogleLoading ? (
-                <>
-                  <div className="size-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Connecting Google...
-                </>
-              ) : (
-                <>
-                  <Chrome className="size-5" />
-                  Sign up with Google
-                </>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={handleGoogleSignup}
+                disabled={isGoogleLoading || isLoading || googleUnavailable}
+                className="w-full py-3 bg-gray-800 hover:bg-gray-700 disabled:bg-gray-700 disabled:text-gray-500 text-gray-200 font-medium rounded-xl transition-all border border-gray-600 hover:border-gray-500 disabled:border-gray-600 flex items-center justify-center gap-2"
+              >
+                {isGoogleLoading ? (
+                  <>
+                    <div className="size-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Connecting Google...
+                  </>
+                ) : (
+                  <>
+                    <Chrome className="size-5" />
+                    Sign up with Google
+                  </>
+                )}
+              </button>
+              {googleUnavailable && (
+                <motion.div
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex items-center gap-2 p-2 bg-yellow-950/30 border border-yellow-600/30 rounded-lg"
+                >
+                  <Info className="size-4 text-yellow-500 flex-shrink-0" />
+                  <p className="text-xs text-yellow-400">Google auth temporarily unavailable. Use email/password instead.</p>
+                </motion.div>
               )}
-            </button>
+            </div>
           </form>
 
           {/* Sign in link */}

@@ -1,12 +1,42 @@
 const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
 const API_BASE_URL = (viteEnv?.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 
-type Prediction = "FAKE" | "REAL";
+type Prediction = "FAKE" | "REAL" | "UNCERTAIN";
 
 type ApiError = {
   detail?: string;
   message?: string;
 };
+
+function getCurrentUserEmail(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const rawUser = localStorage.getItem("veritasai_user");
+  if (!rawUser) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawUser) as { email?: string };
+    const email = (parsed.email || "").trim().toLowerCase();
+    return email || null;
+  } catch {
+    return null;
+  }
+}
+
+function withUserHeaders(headers: Record<string, string> = {}): Record<string, string> {
+  const nextHeaders = { ...headers };
+  const userEmail = getCurrentUserEmail();
+
+  if (userEmail) {
+    nextHeaders["X-User-Email"] = userEmail;
+  }
+
+  return nextHeaders;
+}
 
 export type AuthUser = {
   name: string;
@@ -100,7 +130,7 @@ export async function signup(payload: {
 export async function analyzeText(text: string): Promise<AnalysisResult> {
   const response = await fetch(`${API_BASE_URL}/api/analyze/text`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: withUserHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ text }),
   });
 
@@ -110,7 +140,7 @@ export async function analyzeText(text: string): Promise<AnalysisResult> {
 export async function analyzeUrl(url: string): Promise<AnalysisResult> {
   const response = await fetch(`${API_BASE_URL}/api/analyze/url`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: withUserHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ url }),
   });
 
@@ -123,6 +153,7 @@ export async function analyzeImage(file: File): Promise<AnalysisResult> {
 
   const response = await fetch(`${API_BASE_URL}/api/analyze/image`, {
     method: "POST",
+    headers: withUserHeaders(),
     body: formData,
   });
 
@@ -135,6 +166,7 @@ export async function analyzeVideo(file: File): Promise<AnalysisResult> {
 
   const response = await fetch(`${API_BASE_URL}/api/analyze/video`, {
     method: "POST",
+    headers: withUserHeaders(),
     body: formData,
   });
 
@@ -144,7 +176,7 @@ export async function analyzeVideo(file: File): Promise<AnalysisResult> {
 export async function analyzeVideoUrl(url: string): Promise<AnalysisResult> {
   const response = await fetch(`${API_BASE_URL}/api/analyze/video-url`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: withUserHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ url }),
   });
 
@@ -152,6 +184,8 @@ export async function analyzeVideoUrl(url: string): Promise<AnalysisResult> {
 }
 
 export async function fetchHistory(): Promise<HistoryItem[]> {
-  const response = await fetch(`${API_BASE_URL}/api/history`);
+  const response = await fetch(`${API_BASE_URL}/api/history`, {
+    headers: withUserHeaders(),
+  });
   return readResponse<HistoryItem[]>(response);
 }

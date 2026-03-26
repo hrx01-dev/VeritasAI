@@ -13,7 +13,9 @@ const typeIcons = {
 export default function History() {
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [error, setError] = useState("");
+  const [pdfError, setPdfError] = useState("");
 
   useEffect(() => {
     const loadHistory = async () => {
@@ -37,15 +39,17 @@ export default function History() {
     const total = historyItems.length;
     const fake = historyItems.filter((item) => item.result === "FAKE").length;
     const real = historyItems.filter((item) => item.result === "REAL").length;
-    return { total, fake, real };
+    const uncertain = historyItems.filter((item) => item.result === "UNCERTAIN").length;
+    return { total, fake, real, uncertain };
   }, [historyItems]);
 
   const resultDistributionData = useMemo(
     () => [
       { name: "Fake", value: stats.fake, color: "#ef4444" },
       { name: "Real", value: stats.real, color: "#22c55e" },
+      { name: "Uncertain", value: stats.uncertain, color: "#f59e0b" },
     ],
-    [stats.fake, stats.real],
+    [stats.fake, stats.real, stats.uncertain],
   );
 
   const analysisTypeData = useMemo(() => {
@@ -119,13 +123,17 @@ export default function History() {
     }));
 
   const handleDownloadPdfReport = async () => {
-    if (historyItems.length === 0) return;
+    if (historyItems.length === 0 || isExportingPdf) return;
 
-    const { jsPDF } = await import("jspdf");
-    const rows = buildReportRows();
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
+    setPdfError("");
+    setIsExportingPdf(true);
+
+    try {
+      const { jsPDF } = await import("jspdf");
+      const rows = buildReportRows();
+      const doc = new jsPDF({ unit: "pt", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
 
     const drawScoreBar = (x: number, y: number, width: number, score: number, label: string) => {
       const normalized = Math.max(0, Math.min(score, 100));
@@ -236,11 +244,14 @@ export default function History() {
       doc.setTextColor(30, 41, 59);
       doc.text(`Analysis #${row.index} (${row.type.toUpperCase()})`, 40, cursorY);
 
-      const badgeText = row.badge ?? (row.result === "REAL" ? "SAFE" : "NOT SAFE");
+      const badgeText = row.badge ?? (row.result === "REAL" ? "SAFE" : row.result === "UNCERTAIN" ? "UNCERTAIN" : "NOT SAFE");
       const badgeWidth = doc.getTextWidth(badgeText) + 22;
       if (badgeText === "SAFE") {
         doc.setFillColor(220, 252, 231);
         doc.setTextColor(22, 101, 52);
+      } else if (badgeText === "UNCERTAIN") {
+        doc.setFillColor(254, 243, 199);
+        doc.setTextColor(146, 64, 14);
       } else {
         doc.setFillColor(254, 226, 226);
         doc.setTextColor(153, 27, 27);
@@ -327,10 +338,21 @@ export default function History() {
         cursorY = writeWrappedLines(row, cursorY, inputLines, 40, 12, 48) + 8;
 
         if (row.visualization && cursorY + 230 < pageHeight - 48) {
-          doc.setDrawColor(203, 213, 225);
-          doc.roundedRect(40, cursorY, 220, 180, 8, 8);
-          doc.addImage(row.visualization, "PNG", 44, cursorY + 4, 212, 172);
-          cursorY += 192;
+          try {
+            const imageTypeMatch = row.visualization.match(/^data:image\/(png|jpeg|jpg);base64,/i);
+            const imageType = imageTypeMatch?.[1]?.toUpperCase() === "JPG" ? "JPEG" : imageTypeMatch?.[1]?.toUpperCase() ?? "PNG";
+
+            doc.setDrawColor(203, 213, 225);
+            doc.roundedRect(40, cursorY, 220, 180, 8, 8);
+            doc.addImage(row.visualization, imageType as "PNG" | "JPEG", 44, cursorY + 4, 212, 172);
+            cursorY += 192;
+          } catch {
+            const fallbackLines = doc.splitTextToSize(
+              "Image preview could not be embedded in this PDF. The analysis data is still included below.",
+              pageWidth - 80,
+            );
+            cursorY = writeWrappedLines(row, cursorY, fallbackLines, 40, 12, 48) + 12;
+          }
         } else {
           const fallbackLines = doc.splitTextToSize(
             "Image preview is unavailable for this record. Run a new image analysis to include preview data.",
@@ -470,7 +492,13 @@ export default function History() {
       });
     });
 
-    doc.save(`veritasai-report-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.pdf`);
+      doc.save(`veritasai-report-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.pdf`);
+    } catch (err) {
+      console.error("Failed to export PDF report", err);
+      setPdfError("Unable to generate PDF report for one or more records. Try JSON report, then retry PDF.");
+    } finally {
+      setIsExportingPdf(false);
+    }
   };
 
   const handleDownloadJsonReport = () => {
@@ -481,6 +509,7 @@ export default function History() {
         total: stats.total,
         fake: stats.fake,
         real: stats.real,
+        uncertain: stats.uncertain,
       },
       detections: buildReportRows(),
     };
@@ -501,6 +530,7 @@ export default function History() {
     lines.push(`- Total analyses: ${stats.total}`);
     lines.push(`- Fake detected: ${stats.fake}`);
     lines.push(`- Real verified: ${stats.real}`);
+    lines.push(`- Uncertain outcomes: ${stats.uncertain}`);
     lines.push("");
     lines.push("DETAILED RESULTS");
 
@@ -563,11 +593,15 @@ export default function History() {
                       className={`flex items-center gap-2 px-3 py-1.5 rounded-full backdrop-blur-sm ${
                         item.result === "FAKE"
                           ? "bg-red-950/50 border border-red-500/30"
+                          : item.result === "UNCERTAIN"
+                          ? "bg-amber-950/50 border border-amber-500/30"
                           : "bg-green-950/50 border border-green-500/30"
                       }`}
                     >
                       {item.result === "FAKE" ? (
                         <AlertTriangle className="size-4 text-red-500" />
+                      ) : item.result === "UNCERTAIN" ? (
+                        <AlertTriangle className="size-4 text-amber-500" />
                       ) : (
                         <CheckCircle className="size-4 text-green-500" />
                       )}
@@ -575,6 +609,8 @@ export default function History() {
                         className={`text-sm font-medium ${
                           item.result === "FAKE"
                             ? "text-red-500"
+                            : item.result === "UNCERTAIN"
+                            ? "text-amber-500"
                             : "text-green-500"
                         }`}
                       >
@@ -600,6 +636,8 @@ export default function History() {
                       className={`h-full transition-all ${
                         item.result === "FAKE"
                           ? "bg-gradient-to-r from-red-600 to-red-500"
+                          : item.result === "UNCERTAIN"
+                          ? "bg-gradient-to-r from-amber-600 to-yellow-500"
                           : "bg-gradient-to-r from-green-600 to-green-500"
                       }`}
                     />
@@ -626,6 +664,9 @@ export default function History() {
         </div>
 
         <div className="flex flex-wrap gap-3">
+          {pdfError && (
+            <p className="w-full text-sm text-amber-400">{pdfError}</p>
+          )}
           <button
             onClick={handleDownloadJsonReport}
             disabled={historyItems.length === 0}
@@ -646,11 +687,11 @@ export default function History() {
 
           <button
             onClick={handleDownloadPdfReport}
-            disabled={historyItems.length === 0}
+            disabled={historyItems.length === 0 || isExportingPdf}
             className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-500 hover:to-pink-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 text-white font-medium rounded-xl transition-all shadow-lg shadow-rose-500/20 hover:shadow-rose-500/40 disabled:shadow-none"
           >
             <Download className="size-4" />
-            Download PDF Report
+            {isExportingPdf ? "Generating PDF..." : "Download PDF Report"}
           </button>
         </div>
       </div>

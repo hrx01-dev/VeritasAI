@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 
@@ -71,13 +71,14 @@ except ImportError:
 
 try:
     import firebase_admin
-    from firebase_admin import credentials, firestore
+    from firebase_admin import credentials, firestore, auth as firebase_auth
 except ImportError:
     firebase_admin = None
     credentials = None
     firestore = None
+    firebase_auth = None
 
-Prediction = Literal["FAKE", "REAL"]
+Prediction = Literal["FAKE", "REAL", "UNCERTAIN"]
 AnalysisType = Literal["text", "url", "image", "video"]
 
 logger = logging.getLogger(__name__)
@@ -163,13 +164,19 @@ SUSPICIOUS_TLDS = {
 }
 
 
-class XceptionBinaryClassifier(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.model = timm.create_model("xception", pretrained=False, num_classes=2)
+if nn is not None:
+    class XceptionBinaryClassifier(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = timm.create_model("xception", pretrained=False, num_classes=2)
 
-    def forward(self, x: Any) -> Any:
-        return self.model(x)
+        def forward(self, x: Any) -> Any:
+            return self.model(x)
+else:
+    # Fallback class for when torch is not available
+    class XceptionBinaryClassifier:
+        def __init__(self) -> None:
+            pass
 
 
 class UserResponse(BaseModel):
@@ -308,6 +315,14 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_user_email(user_email: Optional[str]) -> Optional[str]:
+    if not user_email:
+        return None
+
+    normalized = user_email.strip().lower()
+    return normalized or None
+
+
 def _prediction_seed(seed_text: str) -> bool:
     # Make pseudo-random results deterministic for repeated identical inputs.
     return hash(seed_text) % 2 == 0
@@ -387,6 +402,23 @@ def _build_text_reasons(prediction: Prediction, confidence: int, text: str) -> L
             reasons.append(f"Potential misinformation cues detected: {', '.join(fake_cues)}.")
         if key_points:
             reasons.append(f"Key point flagged: {key_points[0]}")
+        return reasons[:4]
+
+    if prediction == "UNCERTAIN":
+        reasons = [
+            f"Model confidence is mixed at {confidence}%, with FAKE and REAL cues close to each other.",
+            "The text includes both credibility markers and potentially manipulative framing.",
+        ]
+        if fake_cues and real_cues:
+            reasons.append(
+                f"Conflicting cues detected: misinformation-like ({', '.join(fake_cues)}) and credibility-like ({', '.join(real_cues)})."
+            )
+        elif fake_cues:
+            reasons.append(f"Potential misinformation cues detected: {', '.join(fake_cues)}.")
+        elif real_cues:
+            reasons.append(f"Credibility cues detected: {', '.join(real_cues)}.")
+        if key_points:
+            reasons.append(f"Key point requiring manual review: {key_points[0]}")
         return reasons[:4]
 
     reasons = [
@@ -730,10 +762,18 @@ def _score_deepfake_faces(face_images: List[Any]) -> float:
 
 def _build_video_reasons(fake_probability: float, frame_count: int, face_count: int) -> List[str]:
     fake_percent = int(round(fake_probability * 100))
+    if 45 <= fake_percent <= 55:
+        verdict_line = "Deepfake likelihood sits in a borderline range and should be manually reviewed."
+    elif fake_percent > 55:
+        verdict_line = "Model cues lean toward manipulated/deepfake content."
+    else:
+        verdict_line = "Model cues lean toward authentic content."
+
     return [
         f"Processed {frame_count} frames using FFmpeg/OpenCV extraction pipeline.",
         f"Detected and analyzed {face_count} face crops with MTCNN.",
         f"Xception model (FaceForensics++ checkpoint) estimated deepfake probability at {fake_percent}%.",
+        verdict_line,
         "Frame-level face predictions were aggregated into a final video authenticity score.",
     ]
 
@@ -795,6 +835,7 @@ def _build_image_visualization(image_bgr: Any, anomaly_map: Any) -> str:
 def _analyze_image_integrity(image_bgr: Any) -> Dict[str, Any]:
     ela_map = _compute_ela_map(image_bgr)
     edge_map = _compute_edge_map(image_bgr)
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
 
     combined = cv2.addWeighted(ela_map, 0.7, edge_map, 0.3, 0)
     combined_norm = cv2.normalize(combined, None, 0, 255, cv2.NORM_MINMAX).astype("uint8")
@@ -807,18 +848,142 @@ def _analyze_image_integrity(image_bgr: Any) -> Dict[str, Any]:
     ela_peak_score = float(np.clip((ela_peak - 26.0) / 90.0, 0.0, 1.0) * 100.0)
     edge_anomaly_score = float(np.clip(abs(edge_density - 11.0) / 11.0, 0.0, 1.0) * 100.0)
 
-    manipulation_score = int(round((0.55 * ela_mean_score) + (0.30 * ela_peak_score) + (0.15 * edge_anomaly_score)))
-    manipulation_score = max(1, min(99, manipulation_score))
+    # Cue 1: overly smooth skin texture (low high-frequency detail in skin-like regions).
+    ycrcb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2YCrCb)
+    skin_mask = cv2.inRange(ycrcb, (0, 133, 77), (255, 173, 127))
+    lap_map = cv2.Laplacian(gray, cv2.CV_64F)
+    skin_pixels = int(np.count_nonzero(skin_mask))
+    if skin_pixels > 500:
+        skin_lap_var = float(np.var(lap_map[skin_mask > 0]))
+    else:
+        skin_lap_var = float(np.var(lap_map))
+    # Original formula: higher smoothness = higher score (max 100)
+    smooth_skin_score = float(np.clip((42.0 - skin_lap_var) / 42.0, 0.0, 1.0) * 100.0)
 
-    prediction: Prediction = "FAKE" if manipulation_score >= 50 else "REAL"
-    confidence = int(round(58 + (abs(manipulation_score - 50) * 0.82)))
-    confidence = max(55, min(99, confidence))
+    # Cue 2: unnatural symmetry (very low difference between mirrored halves).
+    height, width = gray.shape[:2]
+    half_width = width // 2
+    if half_width > 20:
+        left_half = gray[:, :half_width]
+        right_half = gray[:, width - half_width :]
+        mirrored_right = cv2.flip(right_half, 1)
+        symmetry_diff = float(np.mean(cv2.absdiff(left_half, mirrored_right)))
+    else:
+        symmetry_diff = 32.0
+    # Original formula: higher symmetry = higher score
+    symmetry_score = float(np.clip((22.0 - symmetry_diff) / 22.0, 0.0, 1.0) * 100.0)
+
+    # Cue 3: lack of sensor/noise residuals.
+    denoised = cv2.GaussianBlur(gray, (5, 5), 0)
+    noise_residual = cv2.absdiff(gray, denoised)
+    residual_energy = float(np.mean(noise_residual))
+    # Original formula: lower noise = higher score (synthetic)
+    low_noise_score = float(np.clip((16.0 - residual_energy) / 16.0, 0.0, 1.0) * 100.0)
+
+    # Unified tamper signal for photoshopped/deepfake-like traits.
+    # This avoids over-relying on any single cue and makes REAL verdicts stricter.
+    moderate_threshold = 55
+    high_threshold = 70
+
+    moderate_smoothness = smooth_skin_score >= moderate_threshold
+    moderate_symmetry = symmetry_score >= moderate_threshold
+    moderate_low_noise = low_noise_score >= moderate_threshold
+
+    very_high_smoothness = smooth_skin_score >= high_threshold
+    very_high_symmetry = symmetry_score >= high_threshold
+    very_high_low_noise = low_noise_score >= high_threshold
+
+    moderate_count = sum([moderate_smoothness, moderate_symmetry, moderate_low_noise])
+    high_count = sum([very_high_smoothness, very_high_symmetry, very_high_low_noise])
+
+    ela_edge_score = (0.40 * ela_mean_score) + (0.25 * ela_peak_score) + (0.15 * edge_anomaly_score)
+    forensic_avg = (smooth_skin_score + symmetry_score + low_noise_score) / 3.0
+
+    ela_hotspot_ratio = float(np.mean(ela_map > np.percentile(ela_map, 90)) * 100.0)
+    ela_hotspot_score = float(np.clip((ela_hotspot_ratio - 8.0) / 22.0, 0.0, 1.0) * 100.0)
+
+    tamper_signal = float(
+        (0.30 * ela_peak_score)
+        + (0.20 * ela_mean_score)
+        + (0.15 * edge_anomaly_score)
+        + (0.15 * smooth_skin_score)
+        + (0.10 * symmetry_score)
+        + (0.10 * low_noise_score)
+        + (0.10 * ela_hotspot_score)
+    )
+
+    fake_evidence = (
+        (tamper_signal >= 62)
+        or (high_count >= 2)
+        or (moderate_count >= 2 and ela_peak_score >= 56)
+        or (ela_peak_score >= 72 and moderate_count >= 1)
+    )
+    real_evidence = (
+        (tamper_signal <= 34)
+        and (moderate_count == 0)
+        and (ela_peak_score < 52)
+        and (ela_hotspot_score < 42)
+    )
+
+    if fake_evidence:
+        prediction: Prediction = "FAKE"
+        manipulation_score = int(round(max(tamper_signal, 62.0)))
+        manipulation_score = max(62, min(99, manipulation_score))
+    elif real_evidence:
+        prediction = "REAL"
+        manipulation_score = int(round(min(tamper_signal, 34.0)))
+        manipulation_score = max(1, min(34, manipulation_score))
+    else:
+        prediction = "UNCERTAIN"
+        manipulation_score = int(round(min(59.0, max(43.0, tamper_signal))))
+        manipulation_score = max(43, min(59, manipulation_score))
+
+    # DEBUG: Log scores for tuning and field validation.
+    logger.info(
+        "[IMG_DEBUG] smooth=%.0f sym=%.0f noise=%.0f ela=%.0f peak=%.0f hotspot=%.0f | moderate=%d high=%d tamper=%.0f => %s (%d)",
+        smooth_skin_score,
+        symmetry_score,
+        low_noise_score,
+        ela_edge_score,
+        ela_peak_score,
+        ela_hotspot_score,
+        moderate_count,
+        high_count,
+        tamper_signal,
+        prediction,
+        manipulation_score,
+    )
+
+    # Confidence is prediction-specific to avoid inflated "REAL 99%" from weak evidence.
+    if prediction == "FAKE":
+        fake_signal = max(tamper_signal, (high_count * 24) + (moderate_count * 10))
+        confidence = int(round(58 + (fake_signal * 0.34)))
+        confidence = max(58, min(94, confidence))
+    elif prediction == "REAL":
+        clean_signal = max(0.0, 100.0 - tamper_signal)
+        confidence = int(round(50 + (clean_signal * 0.22)))
+        confidence = max(50, min(82, confidence))
+    else:
+        uncertainty_signal = abs(50 - manipulation_score)
+        confidence = int(round(50 + (uncertainty_signal * 0.35)))
+        confidence = max(45, min(69, confidence))
 
     reasons = [
-        f"ELA average intensity measured {ela_mean:.1f}/255 after JPEG recompression consistency analysis.",
-        f"ELA peak anomaly reached {ela_peak:.1f}/255 in the top 5% of suspicious regions.",
-        f"Edge map density measured {edge_density:.1f}%, indicating {'irregular' if edge_anomaly_score > 45 else 'natural'} structural transitions.",
-        "Final score blends ELA and edge signals to estimate manipulation likelihood.",
+        f"Forensic analysis combines texture, symmetry, noise, and ELA support (ELA baseline {ela_edge_score:.0f}%).",
+        (
+            f"Skin texture cue: {'suspected overly smooth skin patterns' if very_high_smoothness else 'texture variations appear normal'} "
+            f"(score {smooth_skin_score:.0f}/100)."
+        ),
+        (
+            f"Symmetry cue: {'suspected unnatural left-right symmetry' if very_high_symmetry else 'natural asymmetry present'} "
+            f"(score {symmetry_score:.0f}/100)."
+        ),
+        (
+            f"Noise cue: {'suspected lack of sensor-like noise residuals' if very_high_low_noise else 'natural noise present'} "
+            f"(score {low_noise_score:.0f}/100)."
+        ),
+        f"ELA analysis: mean={ela_mean:.1f}/255 peak={ela_peak:.1f}/255 edge_density={edge_density:.1f}%.",
+        f"Forensic cue summary: moderate={moderate_count}, high={high_count}, tamper={tamper_signal:.0f}/100. Final manipulation score: {manipulation_score}/100.",
     ]
 
     visualization = _build_image_visualization(image_bgr, combined_norm)
@@ -1026,6 +1191,12 @@ def _short_url_explanation(prediction: Prediction, trust_score: int, clickbait_c
             f"and clickbait signals are {'low' if clickbait_count <= 1 else 'moderate'}."
         )
 
+    if prediction == "UNCERTAIN":
+        return (
+            f"Marked as UNCERTAIN with trust score {trust_score}/100 because reliability signals are mixed "
+            f"(domain quality {domain_quality}/100 and clickbait risk {'elevated' if clickbait_count > 2 else 'moderate'})."
+        )
+
     return (
         f"Marked as NOT SAFE with trust score {trust_score}/100 due to weaker domain quality "
         f"({domain_quality}/100) and elevated clickbait/content risk."
@@ -1177,9 +1348,14 @@ def _analyze_video_payload(payload: bytes, filename: str) -> AnalysisResponse:
             ) from exc
 
     deepfake_score = int(round(fake_probability * 100))
-    prediction: Prediction = "FAKE" if fake_probability >= 0.5 else "REAL"
-    confidence = int(round(max(fake_probability, 1.0 - fake_probability) * 100))
-    confidence = max(1, min(99, confidence))
+    if 0.45 <= fake_probability <= 0.55:
+        prediction: Prediction = "UNCERTAIN"
+        confidence = int(round(50 + (abs(fake_probability - 0.5) * 120)))
+        confidence = max(45, min(69, confidence))
+    else:
+        prediction = "FAKE" if fake_probability > 0.55 else "REAL"
+        confidence = int(round(max(fake_probability, 1.0 - fake_probability) * 100))
+        confidence = max(55, min(99, confidence))
 
     return AnalysisResponse(
         prediction=prediction,
@@ -1189,8 +1365,14 @@ def _analyze_video_payload(payload: bytes, filename: str) -> AnalysisResponse:
     )
 
 
-def _push_history(item_type: AnalysisType, content: str, result: AnalysisResponse) -> None:
+def _push_history(
+    item_type: AnalysisType,
+    content: str,
+    result: AnalysisResponse,
+    user_email: Optional[str] = None,
+) -> None:
     history_id = str(uuid.uuid4())
+    normalized_email = _normalize_user_email(user_email)
     history_item = {
         "id": history_id,
         "type": item_type,
@@ -1207,6 +1389,7 @@ def _push_history(item_type: AnalysisType, content: str, result: AnalysisRespons
         "shortExplanation": result.shortExplanation,
         "badge": result.badge,
         "visualization": result.visualization,
+        "userEmail": normalized_email,
     }
 
     ANALYSIS_HISTORY.insert(0, history_item)
@@ -1221,16 +1404,24 @@ def _push_history(item_type: AnalysisType, content: str, result: AnalysisRespons
         )
 
 
-def _load_history() -> List[dict]:
-    if FIRESTORE_DB is None or firestore is None:
-        return ANALYSIS_HISTORY
+def _load_history(user_email: Optional[str] = None) -> List[dict]:
+    normalized_email = _normalize_user_email(user_email)
 
-    snapshots = (
-        FIRESTORE_DB.collection("analysis_history")
-        .order_by("timestamp", direction=firestore.Query.DESCENDING)
-        .limit(200)
-        .stream()
-    )
+    if FIRESTORE_DB is None or firestore is None:
+        if normalized_email is None:
+            return ANALYSIS_HISTORY
+
+        return [
+            item
+            for item in ANALYSIS_HISTORY
+            if _normalize_user_email(item.get("userEmail")) == normalized_email
+        ]
+
+    query = FIRESTORE_DB.collection("analysis_history")
+    if normalized_email is None:
+        snapshots = query.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(200).stream()
+    else:
+        snapshots = query.where("userEmail", "==", normalized_email).limit(400).stream()
 
     items: List[dict] = []
     for snapshot in snapshots:
@@ -1252,13 +1443,36 @@ def _load_history() -> List[dict]:
                 "shortExplanation": data.get("shortExplanation"),
                 "badge": data.get("badge"),
                 "visualization": data.get("visualization"),
+                "userEmail": data.get("userEmail"),
             }
         )
+
+    if normalized_email is not None:
+        items.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
 
     return items
 
 
 _init_firestore()
+
+
+def _verify_firebase_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verify a Firebase ID token and return user claims if valid."""
+    if firebase_admin is None or firebase_auth is None:
+        logger.warning("Firebase Admin SDK not initialized. Cannot verify tokens.")
+        return None
+    
+    try:
+        decoded_token = firebase_auth.verify_id_token(token)
+        return decoded_token
+    except Exception as exc:
+        logger.debug("Firebase token verification failed: %s", exc)
+        return None
+
+
+def _is_firebase_token(password: str) -> bool:
+    """Check if a password string looks like a Firebase token (very long, alphanumeric)."""
+    return len(password) > 500 and all(c.isalnum() or c in ".-_" for c in password)
 
 
 @app.get("/health")
@@ -1278,10 +1492,24 @@ def signup(payload: SignupRequest) -> AuthResponse:
     if _get_user_record(email_key) is not None:
         raise HTTPException(status_code=409, detail="User already exists")
 
+    # Check if this is a Firebase token (Google auth)
+    is_firebase_auth = _is_firebase_token(payload.password)
+    if is_firebase_auth:
+        decoded = _verify_firebase_token(payload.password)
+        if decoded is None:
+            raise HTTPException(status_code=401, detail="Invalid Firebase token")
+        # For Firebase auth, we don't store the token; just mark as Google auth
+        auth_method = "google"
+        stored_password = f"firebase:{decoded.get('email', '')}"
+    else:
+        auth_method = "email"
+        stored_password = payload.password
+
     new_user = {
         "name": payload.name,
         "email": payload.email,
-        "password": payload.password,
+        "password": stored_password,
+        "auth_method": auth_method,
     }
     _save_user_record(email_key, new_user)
 
@@ -1296,26 +1524,54 @@ def login(payload: LoginRequest) -> AuthResponse:
     email_key = payload.email.lower()
     user = _get_user_record(email_key)
 
-    if user is None:
-        # Demo convenience: auto-provision the first login for unknown users.
-        user = {
-            "name": payload.email.split("@")[0],
-            "email": payload.email,
-            "password": payload.password,
-        }
-        _save_user_record(email_key, user)
+    # Check if this is a Firebase token (Google auth)
+    is_firebase_auth = _is_firebase_token(payload.password)
+    
+    if is_firebase_auth:
+        # Verify the Firebase token
+        decoded = _verify_firebase_token(payload.password)
+        if decoded is None:
+            raise HTTPException(status_code=401, detail="Invalid Firebase token")
+        
+        # Auto-provision user if they don't exist (first Google login)
+        if user is None:
+            user = {
+                "name": decoded.get("name", payload.email.split("@")[0]),
+                "email": payload.email,
+                "password": f"firebase:{decoded.get('email', '')}",
+                "auth_method": "google",
+            }
+            _save_user_record(email_key, user)
+        return AuthResponse(
+            token=str(uuid.uuid4()),
+            user=UserResponse(name=user["name"], email=user["email"]),
+        )
+    else:
+        # Standard email/password auth
+        if user is None:
+            # Demo convenience: auto-provision the first login for unknown users.
+            user = {
+                "name": payload.email.split("@")[0],
+                "email": payload.email,
+                "password": payload.password,
+                "auth_method": "email",
+            }
+            _save_user_record(email_key, user)
+        
+        if user["password"] != payload.password:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    if user["password"] != payload.password:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    return AuthResponse(
-        token=str(uuid.uuid4()),
-        user=UserResponse(name=user["name"], email=user["email"]),
-    )
+        return AuthResponse(
+            token=str(uuid.uuid4()),
+            user=UserResponse(name=user["name"], email=user["email"]),
+        )
 
 
 @app.post("/api/analyze/text", response_model=AnalysisResponse)
-def analyze_text(payload: TextAnalysisRequest) -> AnalysisResponse:
+def analyze_text(
+    payload: TextAnalysisRequest,
+    user_email: Optional[str] = Header(default=None, alias="X-User-Email"),
+) -> AnalysisResponse:
     try:
         classifier = _load_text_classifier()
         model_output = classifier(
@@ -1336,21 +1592,30 @@ def analyze_text(payload: TextAnalysisRequest) -> AnalysisResponse:
     fake_score = score_map.get("fake news", 0.0)
     real_score = score_map.get("real news", 0.0)
 
-    prediction: Prediction = "FAKE" if fake_score >= real_score else "REAL"
-    confidence = int(round(max(fake_score, real_score) * 100))
-    confidence = max(1, min(99, confidence))
+    score_gap = abs(fake_score - real_score)
+    if score_gap < 0.12:
+        prediction: Prediction = "UNCERTAIN"
+        confidence = int(round((0.5 + score_gap / 2.0) * 100))
+        confidence = max(45, min(69, confidence))
+    else:
+        prediction = "FAKE" if fake_score >= real_score else "REAL"
+        confidence = int(round(max(fake_score, real_score) * 100))
+        confidence = max(55, min(99, confidence))
 
     result = AnalysisResponse(
         prediction=prediction,
         confidence=confidence,
         reasons=_build_text_reasons(prediction, confidence, payload.text),
     )
-    _push_history("text", payload.text[:5000], result)
+    _push_history("text", payload.text[:5000], result, user_email=user_email)
     return result
 
 
 @app.post("/api/analyze/url", response_model=AnalysisResponse)
-def analyze_url(payload: UrlAnalysisRequest) -> AnalysisResponse:
+def analyze_url(
+    payload: UrlAnalysisRequest,
+    user_email: Optional[str] = Header(default=None, alias="X-User-Email"),
+) -> AnalysisResponse:
     try:
         _require_url_dependencies()
         normalized_url = _normalize_url(payload.url)
@@ -1399,9 +1664,14 @@ def analyze_url(payload: UrlAnalysisRequest) -> AnalysisResponse:
     )
     trust_score = max(1, min(99, trust_score))
 
-    prediction: Prediction = "REAL" if trust_score >= 60 else "FAKE"
-    confidence = int(round(56 + (abs(trust_score - 50) * 0.88)))
-    confidence = max(55, min(99, confidence))
+    if 45 <= trust_score <= 60:
+        prediction: Prediction = "UNCERTAIN"
+        confidence = int(round(52 + (abs(trust_score - 52) * 0.50)))
+        confidence = max(45, min(69, confidence))
+    else:
+        prediction = "REAL" if trust_score > 60 else "FAKE"
+        confidence = int(round(56 + (abs(trust_score - 50) * 0.88)))
+        confidence = max(55, min(99, confidence))
 
     age_text = (
         f"{age_days} days" if age_days is not None else "unavailable"
@@ -1426,14 +1696,17 @@ def analyze_url(payload: UrlAnalysisRequest) -> AnalysisResponse:
         domainQualityScore=domain_quality_score,
         keywordRiskScore=keyword_risk_score,
         shortExplanation=_short_url_explanation(prediction, trust_score, len(clickbait), domain_quality_score),
-        badge="SAFE" if prediction == "REAL" else "NOT_SAFE",
+        badge=("SAFE" if prediction == "REAL" else "NOT_SAFE" if prediction == "FAKE" else None),
     )
-    _push_history("url", payload.url, result)
+    _push_history("url", payload.url, result, user_email=user_email)
     return result
 
 
 @app.post("/api/analyze/image", response_model=AnalysisResponse)
-async def analyze_image(file: UploadFile = File(...)) -> AnalysisResponse:
+async def analyze_image(
+    file: UploadFile = File(...),
+    user_email: Optional[str] = Header(default=None, alias="X-User-Email"),
+) -> AnalysisResponse:
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload a valid image file")
 
@@ -1459,23 +1732,29 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalysisResponse:
         ) from exc
 
     result = AnalysisResponse(**insights)
-    _push_history("image", file.filename or "uploaded-image", result)
+    _push_history("image", file.filename or "uploaded-image", result, user_email=user_email)
     return result
 
 
 @app.post("/api/analyze/video", response_model=AnalysisResponse)
-async def analyze_video(file: UploadFile = File(...)) -> AnalysisResponse:
+async def analyze_video(
+    file: UploadFile = File(...),
+    user_email: Optional[str] = Header(default=None, alias="X-User-Email"),
+) -> AnalysisResponse:
     if not file.content_type or not file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="Please upload a valid video file")
 
     payload = await file.read()
     result = _analyze_video_payload(payload, file.filename or "uploaded-video.mp4")
-    _push_history("video", file.filename or "uploaded-video", result)
+    _push_history("video", file.filename or "uploaded-video", result, user_email=user_email)
     return result
 
 
 @app.post("/api/analyze/video-url", response_model=AnalysisResponse)
-def analyze_video_url(payload: VideoUrlAnalysisRequest) -> AnalysisResponse:
+def analyze_video_url(
+    payload: VideoUrlAnalysisRequest,
+    user_email: Optional[str] = Header(default=None, alias="X-User-Email"),
+) -> AnalysisResponse:
     try:
         filename, video_payload = _download_video_from_url(payload.url)
         result = _analyze_video_payload(video_payload, filename)
@@ -1488,7 +1767,7 @@ def analyze_video_url(payload: VideoUrlAnalysisRequest) -> AnalysisResponse:
             detail="Unable to analyze video from this URL. Use a direct link to a downloadable video file.",
         ) from exc
 
-    _push_history("video", payload.url, result)
+    _push_history("video", payload.url, result, user_email=user_email)
     return result
 
 
@@ -1498,5 +1777,12 @@ def video_readiness() -> VideoReadinessResponse:
 
 
 @app.get("/api/history", response_model=List[HistoryItem])
-def get_history() -> List[HistoryItem]:
-    return [HistoryItem(**item) for item in _load_history()]
+def get_history(user_email: Optional[str] = Header(default=None, alias="X-User-Email")) -> List[HistoryItem]:
+    return [HistoryItem(**item) for item in _load_history(user_email=user_email)]
+
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    _init_firestore()
+    uvicorn.run(app, host="0.0.0.0", port=8000)

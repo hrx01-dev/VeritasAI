@@ -54,12 +54,33 @@ export default function Login() {
     try {
       const credential = await signInWithGooglePopup();
       const user = credential.user;
-      const token = await user.getIdToken();
+      const firebaseToken = await user.getIdToken();
 
-      saveLocalSession(user.displayName || user.email?.split("@")[0] || "Google User", user.email || "", token);
-      navigate("/dashboard");
+      try {
+        // Send Firebase token to backend for validation and login
+        const auth = await loginRequest({
+          email: user.email || "",
+          password: firebaseToken,
+          remember_me: false,
+        });
+
+        saveLocalSession(auth.user.name, auth.user.email, auth.token);
+        navigate("/dashboard");
+      } catch (backendErr) {
+        const backendMsg = backendErr instanceof Error ? backendErr.message : "";
+        
+        // Check if it's a token validation issue vs network issue
+        if (backendMsg.includes("Invalid Firebase token") || backendMsg.includes("token verification")) {
+          throw new Error(
+            "Backend cannot validate your Google account. Please ensure Firebase Admin SDK is properly configured on the server."
+          );
+        }
+        
+        throw backendErr;
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Google sign-in failed");
+      const errorMsg = err instanceof Error ? err.message : "Google sign-in failed";
+      setError(errorMsg);
     } finally {
       setIsGoogleLoading(false);
     }

@@ -5,12 +5,12 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { analyzeText } from "../lib/api";
 
 type AnalysisResult = {
-  prediction: "FAKE" | "REAL";
+  prediction: "FAKE" | "REAL" | "UNCERTAIN";
   confidence: number;
   reasons: string[];
 };
 
-function getCuteReaction(prediction: "FAKE" | "REAL", confidence: number): string {
+function getCuteReaction(prediction: "FAKE" | "REAL" | "UNCERTAIN", confidence: number): string {
   const fakeMessages = [
     "Uh-oh, this one is giving drama llama energy. Proceed with caution.",
     "Our truth detector raised an eyebrow and spilled its tea.",
@@ -25,7 +25,14 @@ function getCuteReaction(prediction: "FAKE" | "REAL", confidence: number): strin
     "Looks solid. Gold star for this content.",
   ];
 
-  const messages = prediction === "FAKE" ? fakeMessages : realMessages;
+  const uncertainMessages = [
+    "Mixed signals detected. This one needs a human second look.",
+    "Not enough evidence for a hard call yet. Proceed thoughtfully.",
+    "Borderline vibes. Keep skepticism on, but avoid overconfidence.",
+    "Both trustworthy and suspicious cues appeared in the same text.",
+  ];
+
+  const messages = prediction === "FAKE" ? fakeMessages : prediction === "REAL" ? realMessages : uncertainMessages;
   return messages[confidence % messages.length];
 }
 
@@ -178,16 +185,20 @@ export default function TextAnalysis() {
             className={`rounded-2xl border p-6 shadow-2xl backdrop-blur-sm ${
               result.prediction === "FAKE"
                 ? "bg-gradient-to-br from-red-950/40 to-red-900/20 border-red-500/50 shadow-red-900/20"
+                : result.prediction === "UNCERTAIN"
+                ? "bg-gradient-to-br from-amber-950/40 to-amber-900/20 border-amber-500/50 shadow-amber-900/20"
                 : "bg-gradient-to-br from-green-950/40 to-green-900/20 border-green-500/50 shadow-green-900/20"
             }`}
           >
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className={`p-3 rounded-xl ${
-                  result.prediction === "FAKE" ? "bg-red-500/20" : "bg-green-500/20"
+                  result.prediction === "FAKE" ? "bg-red-500/20" : result.prediction === "UNCERTAIN" ? "bg-amber-500/20" : "bg-green-500/20"
                 }`}>
                   {result.prediction === "FAKE" ? (
                     <AlertTriangle className="size-8 text-red-500" />
+                  ) : result.prediction === "UNCERTAIN" ? (
+                    <AlertTriangle className="size-8 text-amber-500" />
                   ) : (
                     <CheckCircle className="size-8 text-green-500" />
                   )}
@@ -198,6 +209,8 @@ export default function TextAnalysis() {
                     className={`text-3xl font-bold ${
                       result.prediction === "FAKE"
                         ? "text-red-500"
+                        : result.prediction === "UNCERTAIN"
+                        ? "text-amber-500"
                         : "text-green-500"
                     }`}
                   >
@@ -222,7 +235,7 @@ export default function TextAnalysis() {
                     >
                       <Cell
                         fill={
-                          result.prediction === "FAKE" ? "#ef4444" : "#22c55e"
+                          result.prediction === "FAKE" ? "#ef4444" : result.prediction === "UNCERTAIN" ? "#f59e0b" : "#22c55e"
                         }
                       />
                       <Cell fill="#374151" />
@@ -261,6 +274,8 @@ export default function TextAnalysis() {
                   className={`h-full ${
                     result.prediction === "FAKE"
                       ? "bg-gradient-to-r from-red-600 to-red-500"
+                      : result.prediction === "UNCERTAIN"
+                      ? "bg-gradient-to-r from-amber-600 to-amber-500"
                       : "bg-gradient-to-r from-green-600 to-green-500"
                   }`}
                 />
@@ -286,6 +301,8 @@ export default function TextAnalysis() {
                     className={`size-2 rounded-full mt-2 transition-all group-hover:scale-150 ${
                       result.prediction === "FAKE"
                         ? "bg-red-500"
+                        : result.prediction === "UNCERTAIN"
+                        ? "bg-amber-500"
                         : "bg-green-500"
                     }`}
                   />
