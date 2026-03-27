@@ -1,5 +1,5 @@
 import { NavLink } from "react-router";
-import { FileText, Image, Video, Link, History, Shield } from "lucide-react";
+import { FileText, Image, Video, Link, History, Shield, Users } from "lucide-react";
 
 const navItems = [
   { path: "/dashboard/text-analysis", label: "Text Analysis", icon: FileText },
@@ -7,6 +7,7 @@ const navItems = [
   { path: "/dashboard/video-detection", label: "Video Detection", icon: Video },
   { path: "/dashboard/url-checker", label: "URL Checker", icon: Link },
   { path: "/dashboard/history", label: "History", icon: History },
+  { path: "/dashboard/veritas-connect", label: "VeritasConnect", icon: Users },
 ];
 
 export default function Sidebar() {

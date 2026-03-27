@@ -1,7 +1,17 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
 import { getFirestore } from "firebase/firestore";
-import { getAuth, GoogleAuthProvider, signInWithPopup, type UserCredential, setPersistence, browserLocalPersistence } from "firebase/auth";
+import { getStorage } from "firebase/storage";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  type UserCredential,
+  setPersistence,
+  browserLocalPersistence,
+} from "firebase/auth";
 import { firebaseConfig as defaultConfig } from "./firebaseConfig";
 
 const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
@@ -19,6 +29,7 @@ const firebaseConfig = {
 
 let firebaseApp: any = null;
 let firestoreDb: any = null;
+let firebaseStorage: any = null;
 let firebaseAuth: any = null;
 let googleAuthProvider: GoogleAuthProvider | null = null;
 let firebaseInitError: string | null = null;
@@ -27,6 +38,7 @@ let firebaseReady = false;
 try {
   firebaseApp = initializeApp(firebaseConfig);
   firestoreDb = getFirestore(firebaseApp);
+  firebaseStorage = getStorage(firebaseApp);
   firebaseAuth = getAuth(firebaseApp);
 
   // Set persistence to LOCAL
@@ -38,7 +50,7 @@ try {
 
   googleAuthProvider = new GoogleAuthProvider();
   googleAuthProvider.setCustomParameters({ prompt: "select_account" });
-  
+
   firebaseReady = true;
   console.log("Firebase initialized successfully");
 } catch (err) {
@@ -47,58 +59,155 @@ try {
   firebaseReady = false;
 }
 
-export { firebaseApp, firestoreDb, firebaseAuth, googleAuthProvider };
+export { firebaseApp, firestoreDb, firebaseStorage, firebaseAuth, googleAuthProvider };
 
-export async function signInWithGooglePopup(): Promise<UserCredential> {
-  if (!firebaseReady || !firebaseAuth || !googleAuthProvider) {
-    throw new Error(
-      "Google authentication is temporarily unavailable. Please use email/password signup instead. " +
-      (firebaseInitError ? `(${firebaseInitError})` : "")
+type GoogleAuthErrorInfo = {
+  code: string;
+  message: string;
+};
+
+function getGoogleAuthErrorInfo(err: unknown): GoogleAuthErrorInfo {
+  const raw = err as { code?: string; message?: string } | undefined;
+  return {
+    code: raw?.code || "",
+    message: raw?.message || "",
+  };
+}
+
+function mapGoogleAuthError(err: unknown): Error {
+  const details = getGoogleAuthErrorInfo(err);
+  const errorMsg = details.message;
+  const errorCode = details.code;
+
+  if (
+    errorCode === "auth/unauthorized-domain" ||
+    errorMsg.includes("unauthorized-domain") ||
+    errorMsg.includes("origin not allowed")
+  ) {
+    return new Error(
+      "Google sign-in is blocked for this domain. In Firebase Console, add localhost and 127.0.0.1 to Authorized domains under Authentication settings."
     );
   }
 
-  // Add timeout for Google popup (10 seconds - Firebase needs this)
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => {
-      reject(new Error("Google sign-in request timed out"));
-    }, 10000)
+  if (errorCode === "auth/popup-blocked" || errorMsg.includes("popup")) {
+    return new Error("Google sign-in popup was blocked. Please allow popups and try again.");
+  }
+
+  if (
+    errorMsg.includes("ERR_NAME_NOT_RESOLVED") ||
+    errorMsg.includes("ENOTFOUND") ||
+    errorCode === "auth/network-request-failed"
+  ) {
+    return new Error(
+      "Google sign-in could not reach Google's servers. Please check your internet/firewall and try again."
+    );
+  }
+
+  if (errorMsg.includes("Invalid API Key") || errorMsg.includes("API key not valid")) {
+    return new Error("Firebase configuration issue. Please contact support.");
+  }
+
+  if (errorMsg.includes("NetworkError") || errorMsg.includes("Failed to fetch") || errorMsg.includes("net::ERR")) {
+    return new Error("Network error connecting to Google. Please check your internet connection and try again.");
+  }
+
+  return err instanceof Error ? err : new Error("Google sign-in failed");
+}
+
+function shouldFallbackToRedirect(err: unknown): boolean {
+  const details = getGoogleAuthErrorInfo(err);
+  const combined = `${details.code} ${details.message}`.toLowerCase();
+
+  return (
+    combined.includes("popup-blocked") ||
+    combined.includes("operation-not-supported-in-this-environment") ||
+    combined.includes("web-storage-unsupported") ||
+    combined.includes("chrome-error://chromewebdata")
   );
+}
+
+async function assertFirebaseAuthReachable(): Promise<void> {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const authHost = firebaseConfig.authDomain;
+  if (!authHost) {
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
 
   try {
-    return await Promise.race([signInWithPopup(firebaseAuth, googleAuthProvider), timeoutPromise]);
+    // no-cors allows connectivity probing without requiring CORS headers.
+    await fetch(`https://${authHost}/__/auth/handler`, {
+      method: "GET",
+      mode: "no-cors",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch {
+    throw new Error(
+      "Cannot reach Firebase Auth domain from your network. Please allow these domains in firewall/proxy: *.firebaseapp.com, *.web.app, accounts.google.com, identitytoolkit.googleapis.com, securetoken.googleapis.com."
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function executePopupSignIn(): Promise<UserCredential> {
+  if (!firebaseReady || !firebaseAuth || !googleAuthProvider) {
+    throw new Error(
+      "Google authentication is temporarily unavailable. Please use email/password signup instead. " +
+        (firebaseInitError ? `(${firebaseInitError})` : "")
+    );
+  }
+
+  // Rely on Firebase SDK errors instead of an artificial local timeout that can fire too early.
+  return signInWithPopup(firebaseAuth, googleAuthProvider);
+}
+
+export async function signInWithGooglePopup(): Promise<UserCredential> {
+  try {
+    return await executePopupSignIn();
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : "Google sign-in failed";
-    
-    // Network timeout or DNS resolution failure
-    if (errorMsg.includes("timed out") || errorMsg.includes("timeout") || errorMsg.includes("ERR_NAME_NOT_RESOLVED") || errorMsg.includes("ENOTFOUND")) {
-      throw new Error(
-        "Google sign-in timed out. This is a temporary issue with Google's servers or your network. Please try email/password signup instead."
-      );
+    throw mapGoogleAuthError(err);
+  }
+}
+
+export async function signInWithGoogle(): Promise<UserCredential | null> {
+  if (!firebaseReady || !firebaseAuth || !googleAuthProvider) {
+    throw new Error(
+      "Google authentication is temporarily unavailable. Please use email/password signup instead. " +
+        (firebaseInitError ? `(${firebaseInitError})` : "")
+    );
+  }
+
+  await assertFirebaseAuthReachable();
+
+  try {
+    return await executePopupSignIn();
+  } catch (err) {
+    const forceRedirectOnly = viteEnv?.VITE_GOOGLE_AUTH_REDIRECT_ONLY === "true";
+    if (shouldFallbackToRedirect(err) || forceRedirectOnly) {
+      await signInWithRedirect(firebaseAuth, googleAuthProvider);
+      return null;
     }
-    
-    // CORS or browser blocking
-    if (errorMsg.includes("CORS") || errorMsg.includes("blocked") || errorMsg.includes("origin not allowed")) {
-      throw new Error("Browser or network blocked Google sign-in. Please try email/password signup instead.");
-    }
-    
-    // Popup blocked
-    if (errorMsg.includes("popup")) {
-      throw new Error("Google sign-in popup was blocked. Please allow popups and try again.");
-    }
-    
-    // Firebase configuration issue
-    if (errorMsg.includes("Invalid API Key") || errorMsg.includes("API key not valid")) {
-      throw new Error("Firebase configuration issue. Please contact support.");
-    }
-    
-    // Network connectivity issue
-    if (errorMsg.includes("NetworkError") || errorMsg.includes("Failed to fetch") || errorMsg.includes("net::ERR")) {
-      throw new Error(
-        "Network error connecting to Google. Please check your internet connection and try again."
-      );
-    }
-    
-    throw err;
+
+    throw mapGoogleAuthError(err);
+  }
+}
+
+export async function consumeGoogleRedirectResult(): Promise<UserCredential | null> {
+  if (!firebaseReady || !firebaseAuth) {
+    return null;
+  }
+
+  try {
+    return await getRedirectResult(firebaseAuth);
+  } catch (err) {
+    throw mapGoogleAuthError(err);
   }
 }
 

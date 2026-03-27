@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { Shield, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle2, Chrome, Info } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import { signup as signupRequest, login as loginRequest } from "../lib/api";
-import { signInWithGooglePopup } from "../lib/firebase";
+import { consumeGoogleRedirectResult, signInWithGoogle } from "../lib/firebase";
 import BiometricVerification from "./BiometricVerification";
 
 export default function Signup() {
@@ -95,50 +95,76 @@ export default function Signup() {
     setError("Verification cancelled. Please try again.");
   };
 
+  const completeGoogleSignup = async (user: { email: string | null; displayName: string | null; getIdToken: () => Promise<string> }) => {
+    const firebaseToken = await user.getIdToken();
+
+    try {
+      const auth = await signupRequest({
+        name: user.displayName || user.email?.split("@")[0] || "Google User",
+        email: user.email || "",
+        password: firebaseToken,
+        confirm_password: firebaseToken,
+        accept_terms: true,
+      });
+
+      saveLocalSession(auth.user.name, auth.user.email, auth.token);
+      setShowBiometricVerification(true);
+    } catch (signupErr) {
+      const errorMsg = signupErr instanceof Error ? signupErr.message : "";
+      if (errorMsg.includes("already exists")) {
+        const auth = await loginRequest({
+          email: user.email || "",
+          password: firebaseToken,
+          remember_me: false,
+        });
+        saveLocalSession(auth.user.name, auth.user.email, auth.token);
+        setShowBiometricVerification(true);
+        return;
+      }
+
+      if (errorMsg.includes("Invalid Firebase token") || errorMsg.includes("token verification")) {
+        throw new Error(
+          "Backend cannot validate your Google account. Please ensure backend is running and reachable at VITE_API_BASE_URL."
+        );
+      }
+
+      throw signupErr;
+    }
+  };
+
+  useEffect(() => {
+    const consumeRedirect = async () => {
+      try {
+        const credential = await consumeGoogleRedirectResult();
+        if (!credential) {
+          return;
+        }
+
+        setIsGoogleLoading(true);
+        setError("");
+        await completeGoogleSignup(credential.user);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Google sign-up failed");
+      } finally {
+        setIsGoogleLoading(false);
+      }
+    };
+
+    void consumeRedirect();
+  }, []);
+
   const handleGoogleSignup = async () => {
     setError("");
     setIsGoogleLoading(true);
 
     try {
-      const credential = await signInWithGooglePopup();
-      const user = credential.user;
-      const firebaseToken = await user.getIdToken();
-
-      try {
-        // Try to register the user with the backend
-        const auth = await signupRequest({
-          name: user.displayName || user.email?.split("@")[0] || "Google User",
-          email: user.email || "",
-          password: firebaseToken,
-          confirm_password: firebaseToken,
-          accept_terms: true,
-        });
-
-        saveLocalSession(auth.user.name, auth.user.email, auth.token);
-        setShowBiometricVerification(true);
-      } catch (signupErr) {
-        // If user already exists, try to login instead
-        const errorMsg = signupErr instanceof Error ? signupErr.message : "";
-        if (errorMsg.includes("already exists")) {
-          try {
-            const auth = await loginRequest({
-              email: user.email || "",
-              password: firebaseToken,
-              remember_me: false,
-            });
-            saveLocalSession(auth.user.name, auth.user.email, auth.token);
-            setShowBiometricVerification(true);
-          } catch (loginErr) {
-            throw loginErr;
-          }
-        } else if (errorMsg.includes("Invalid Firebase token") || errorMsg.includes("token verification")) {
-          throw new Error(
-            "Backend cannot validate your Google account. Please ensure Firebase Admin SDK is properly configured on the server."
-          );
-        } else {
-          throw signupErr;
-        }
+      const credential = await signInWithGoogle();
+      if (!credential) {
+        setError("Continuing Google sign-up...");
+        return;
       }
+
+      await completeGoogleSignup(credential.user);
     } catch (err) {
       let errorMessage = "Google sign-up failed";
       const errorDetails = err instanceof Error ? err.message : "";

@@ -1,4 +1,4 @@
-import { FileText, Image, Video, Link as LinkIcon, History, ArrowRight } from "lucide-react";
+import { FileText, Image, Video, Link as LinkIcon, History, ArrowRight, Users } from "lucide-react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router";
 
@@ -37,6 +37,13 @@ const features = [
     path: "/dashboard/history",
     icon: History,
     accent: "from-rose-500 to-pink-600",
+  },
+  {
+    title: "VeritasConnect",
+    description: "Share suspicious content so the community can react and comment.",
+    path: "/dashboard/veritas-connect",
+    icon: Users,
+    accent: "from-sky-500 to-cyan-600",
   },
 ];
 

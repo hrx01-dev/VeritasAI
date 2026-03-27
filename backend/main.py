@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
 
 try:
@@ -95,6 +96,8 @@ app.add_middleware(
 
 USERS: Dict[str, Dict[str, str]] = {}
 ANALYSIS_HISTORY: List[dict] = []
+VERITASCONNECT_POSTS: List[Dict[str, Any]] = []
+VERITASCONNECT_LOCK = threading.Lock()
 FIRESTORE_DB = None
 TEXT_CLASSIFIER = None
 TEXT_CLASSIFIER_LOCK = threading.Lock()
@@ -110,6 +113,11 @@ VIDEO_FRAME_FPS = float(os.getenv("VIDEO_FRAME_FPS", "2.0"))
 VIDEO_FACE_LIMIT = int(os.getenv("VIDEO_FACE_LIMIT", "64"))
 VIDEO_URL_MAX_BYTES = int(os.getenv("VIDEO_URL_MAX_BYTES", str(250 * 1024 * 1024)))
 DEFAULT_XCEPTION_WEIGHTS = Path(__file__).resolve().parent / "models" / "faceforensics_xception.pth"
+DEFAULT_FIREBASE_WEB_API_KEY = "AIzaSyBRdVGqovt2oZrxfqhLdefsy_v3r1LVXTE"
+UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 FAKE_CUE_KEYWORDS = {
     "urgent",
@@ -256,6 +264,26 @@ class VideoReadinessResponse(BaseModel):
     missing: List[str]
 
 
+class VeritasConnectPostCreateRequest(BaseModel):
+    authorName: str = Field(min_length=1)
+    authorEmail: EmailStr
+    text: str = ""
+    mediaUrl: Optional[str] = None
+    mediaType: Optional[Literal["image", "video"]] = None
+    mediaName: Optional[str] = None
+
+
+class VeritasConnectReactionRequest(BaseModel):
+    userEmail: EmailStr
+    reaction: Literal["like", "dislike"]
+
+
+class VeritasConnectCommentCreateRequest(BaseModel):
+    authorName: str = Field(min_length=1)
+    authorEmail: EmailStr
+    text: str = Field(min_length=1)
+
+
 def _init_firestore() -> None:
     global FIRESTORE_DB
 
@@ -278,6 +306,53 @@ def _init_firestore() -> None:
     except Exception as exc:
         FIRESTORE_DB = None
         logger.warning("Unable to initialize Firestore (%s). Using in-memory storage.", exc)
+
+
+def _firebase_web_api_key() -> Optional[str]:
+    """Get Firebase Web API key from environment for REST auth fallback."""
+    return (
+        os.getenv("FIREBASE_WEB_API_KEY")
+        or os.getenv("VITE_FIREBASE_API_KEY")
+        or os.getenv("GOOGLE_FIREBASE_WEB_API_KEY")
+        or DEFAULT_FIREBASE_WEB_API_KEY
+    )
+
+
+def _verify_firebase_token_with_rest(token: str) -> Optional[Dict[str, Any]]:
+    """Verify Firebase ID token through Identity Toolkit REST API."""
+    if requests is None:
+        logger.warning("requests is not installed. Cannot use REST Firebase token verification fallback.")
+        return None
+
+    api_key = _firebase_web_api_key()
+    if not api_key:
+        logger.warning("Missing FIREBASE_WEB_API_KEY (or VITE_FIREBASE_API_KEY). Cannot verify Firebase tokens via REST fallback.")
+        return None
+
+    endpoint = f"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={api_key}"
+
+    try:
+        response = requests.post(
+            endpoint,
+            json={"idToken": token},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+        users = payload.get("users") or []
+        if not users:
+            return None
+
+        user = users[0]
+        return {
+            "uid": user.get("localId", ""),
+            "email": user.get("email", ""),
+            "name": user.get("displayName") or user.get("email", "").split("@")[0],
+            "provider": "google",
+        }
+    except Exception as exc:
+        logger.debug("REST Firebase token verification failed: %s", exc)
+        return None
 
 
 def _get_user_record(email_key: str) -> Optional[Dict[str, Any]]:
@@ -1458,16 +1533,21 @@ _init_firestore()
 
 def _verify_firebase_token(token: str) -> Optional[Dict[str, Any]]:
     """Verify a Firebase ID token and return user claims if valid."""
-    if firebase_admin is None or firebase_auth is None:
-        logger.warning("Firebase Admin SDK not initialized. Cannot verify tokens.")
-        return None
-    
-    try:
-        decoded_token = firebase_auth.verify_id_token(token)
-        return decoded_token
-    except Exception as exc:
-        logger.debug("Firebase token verification failed: %s", exc)
-        return None
+    if firebase_admin is not None and firebase_auth is not None:
+        try:
+            if firebase_admin._apps:
+                decoded_token = firebase_auth.verify_id_token(token)
+                return decoded_token
+        except Exception as exc:
+            logger.debug("Firebase Admin token verification failed: %s", exc)
+
+    # Fallback path for local/dev runs without Firebase Admin credentials.
+    decoded_rest = _verify_firebase_token_with_rest(token)
+    if decoded_rest is not None:
+        return decoded_rest
+
+    logger.warning("Firebase token verification failed via both Admin SDK and REST fallback.")
+    return None
 
 
 def _is_firebase_token(password: str) -> bool:
@@ -1475,9 +1555,149 @@ def _is_firebase_token(password: str) -> bool:
     return len(password) > 500 and all(c.isalnum() or c in ".-_" for c in password)
 
 
+def _safe_upload_extension(file_name: str, content_type: str) -> str:
+    ext = Path(file_name).suffix.lower().strip()
+    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+    video_exts = {".mp4", ".mov", ".webm", ".m4v", ".avi"}
+
+    if content_type.startswith("image/"):
+        return ext if ext in image_exts else ".jpg"
+
+    if content_type.startswith("video/"):
+        return ext if ext in video_exts else ".mp4"
+
+    return ".bin"
+
+
 @app.get("/health")
 def health_check() -> dict:
     return {"status": "ok"}
+
+
+@app.post("/api/veritasconnect/upload")
+async def upload_veritasconnect_media(request: Request, file: UploadFile = File(...)) -> Dict[str, str]:
+    if not file.content_type:
+        raise HTTPException(status_code=400, detail="Missing file content type")
+
+    if not (file.content_type.startswith("image/") or file.content_type.startswith("video/")):
+        raise HTTPException(status_code=400, detail="Only image and video uploads are supported")
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    max_size_bytes = 50 * 1024 * 1024
+    if len(payload) > max_size_bytes:
+        raise HTTPException(status_code=413, detail="File is too large. Max size is 50MB")
+
+    extension = _safe_upload_extension(file.filename or "upload", file.content_type)
+    media_id = f"{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4().hex[:10]}{extension}"
+    destination = UPLOADS_DIR / media_id
+
+    try:
+        destination.write_bytes(payload)
+    except Exception as exc:
+        logger.exception("Failed to save uploaded media: %s", exc)
+        raise HTTPException(status_code=500, detail="Unable to store uploaded media") from exc
+
+    base_url = str(request.base_url).rstrip("/")
+    media_url = f"{base_url}/uploads/{media_id}"
+
+    return {
+        "url": media_url,
+        "mediaType": "image" if file.content_type.startswith("image/") else "video",
+        "mediaName": file.filename or media_id,
+    }
+
+
+@app.get("/api/veritasconnect/posts")
+def get_veritasconnect_posts() -> List[Dict[str, Any]]:
+    with VERITASCONNECT_LOCK:
+        ordered = sorted(VERITASCONNECT_POSTS, key=lambda post: post.get("createdAt", ""), reverse=True)
+        return [dict(post) for post in ordered]
+
+
+@app.post("/api/veritasconnect/posts")
+def create_veritasconnect_post(payload: VeritasConnectPostCreateRequest) -> Dict[str, Any]:
+    text = payload.text.strip()
+    if not text and not payload.mediaUrl:
+        raise HTTPException(status_code=400, detail="Please add a description or upload a file.")
+
+    post = {
+        "id": uuid.uuid4().hex,
+        "authorName": payload.authorName.strip(),
+        "authorEmail": payload.authorEmail.strip().lower(),
+        "text": text,
+        "mediaUrl": payload.mediaUrl,
+        "mediaType": payload.mediaType,
+        "mediaName": payload.mediaName,
+        "likes": [],
+        "dislikes": [],
+        "comments": [],
+        "createdAt": _now_utc_iso(),
+    }
+
+    with VERITASCONNECT_LOCK:
+        VERITASCONNECT_POSTS.append(post)
+
+    return post
+
+
+@app.post("/api/veritasconnect/posts/{post_id}/reaction")
+def set_veritasconnect_reaction(post_id: str, payload: VeritasConnectReactionRequest) -> Dict[str, Any]:
+    normalized_user = payload.userEmail.strip().lower()
+
+    with VERITASCONNECT_LOCK:
+        post = next((item for item in VERITASCONNECT_POSTS if item.get("id") == post_id), None)
+        if post is None:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        likes = set(post.get("likes", []))
+        dislikes = set(post.get("dislikes", []))
+
+        if payload.reaction == "like":
+            if normalized_user in likes:
+                likes.remove(normalized_user)
+            else:
+                likes.add(normalized_user)
+                dislikes.discard(normalized_user)
+        else:
+            if normalized_user in dislikes:
+                dislikes.remove(normalized_user)
+            else:
+                dislikes.add(normalized_user)
+                likes.discard(normalized_user)
+
+        post["likes"] = sorted(likes)
+        post["dislikes"] = sorted(dislikes)
+
+        return dict(post)
+
+
+@app.post("/api/veritasconnect/posts/{post_id}/comments")
+def add_veritasconnect_comment(post_id: str, payload: VeritasConnectCommentCreateRequest) -> Dict[str, Any]:
+    comment_text = payload.text.strip()
+    if not comment_text:
+        raise HTTPException(status_code=400, detail="Comment cannot be empty.")
+
+    with VERITASCONNECT_LOCK:
+        post = next((item for item in VERITASCONNECT_POSTS if item.get("id") == post_id), None)
+        if post is None:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        comments = list(post.get("comments", []))
+        comments.append(
+            {
+                "id": uuid.uuid4().hex,
+                "authorName": payload.authorName.strip(),
+                "authorEmail": payload.authorEmail.strip().lower(),
+                "text": comment_text,
+                "createdAt": _now_utc_iso(),
+            }
+        )
+        post["comments"] = comments
+
+        return dict(post)
 
 
 @app.post("/api/auth/signup", response_model=AuthResponse)

@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { Shield, Mail, Lock, ArrowRight, AlertCircle, Chrome } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import { login as loginRequest } from "../lib/api";
-import { signInWithGooglePopup } from "../lib/firebase";
+import { consumeGoogleRedirectResult, signInWithGoogle } from "../lib/firebase";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -19,6 +19,40 @@ export default function Login() {
     localStorage.setItem("veritasai_user", JSON.stringify({ name, email: userEmail }));
     localStorage.setItem("veritasai_token", token);
   };
+
+  const completeGoogleLogin = async (user: { email: string | null; getIdToken: () => Promise<string> }) => {
+    const firebaseToken = await user.getIdToken();
+
+    const auth = await loginRequest({
+      email: user.email || "",
+      password: firebaseToken,
+      remember_me: false,
+    });
+
+    saveLocalSession(auth.user.name, auth.user.email, auth.token);
+    navigate("/dashboard");
+  };
+
+  useEffect(() => {
+    const consumeRedirect = async () => {
+      try {
+        const credential = await consumeGoogleRedirectResult();
+        if (!credential) {
+          return;
+        }
+
+        setIsGoogleLoading(true);
+        setError("");
+        await completeGoogleLogin(credential.user);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Google sign-in failed");
+      } finally {
+        setIsGoogleLoading(false);
+      }
+    };
+
+    void consumeRedirect();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,32 +86,13 @@ export default function Login() {
     setIsGoogleLoading(true);
 
     try {
-      const credential = await signInWithGooglePopup();
-      const user = credential.user;
-      const firebaseToken = await user.getIdToken();
-
-      try {
-        // Send Firebase token to backend for validation and login
-        const auth = await loginRequest({
-          email: user.email || "",
-          password: firebaseToken,
-          remember_me: false,
-        });
-
-        saveLocalSession(auth.user.name, auth.user.email, auth.token);
-        navigate("/dashboard");
-      } catch (backendErr) {
-        const backendMsg = backendErr instanceof Error ? backendErr.message : "";
-        
-        // Check if it's a token validation issue vs network issue
-        if (backendMsg.includes("Invalid Firebase token") || backendMsg.includes("token verification")) {
-          throw new Error(
-            "Backend cannot validate your Google account. Please ensure Firebase Admin SDK is properly configured on the server."
-          );
-        }
-        
-        throw backendErr;
+      const credential = await signInWithGoogle();
+      if (!credential) {
+        setError("Continuing Google sign-in...");
+        return;
       }
+
+      await completeGoogleLogin(credential.user);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Google sign-in failed";
       setError(errorMsg);

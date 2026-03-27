@@ -10,6 +10,7 @@ import Signup from "./components/Signup";
 import Landing from "./components/Landing";
 import ProtectedRoute from "./components/ProtectedRoute";
 import FeatureChooser from "./components/FeatureChooser";
+import VeritasConnect from "./components/VeritasConnect";
 
 export const router = createBrowserRouter([
   {
@@ -38,6 +39,7 @@ export const router = createBrowserRouter([
       { path: "video-detection", Component: VideoDetection },
       { path: "url-checker", Component: URLChecker },
       { path: "history", Component: History },
+      { path: "veritas-connect", Component: VeritasConnect },
     ],
   },
   {
