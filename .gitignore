@@ -21,3 +21,8 @@ ui-debug.log*
 
 # System files
 .DS_Store
+
+# Firebase/GCP Secrets
+*service-account*.json
+*key.json
+.runtimeconfig.json
