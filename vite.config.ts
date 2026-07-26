@@ -35,6 +35,48 @@ export default defineConfig({
       : {}),
   },
 
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('firebase')) {
+              return 'firebase'
+            }
+            if (id.includes('radix')) {
+              return 'radix'
+            }
+            if (id.includes('motion') || id.includes('framer-motion') || id.includes('canvas-confetti')) {
+              return 'motion'
+            }
+            if (id.includes('recharts') || id.includes('d3-')) {
+              return 'charts'
+            }
+            if (id.includes('lucide-react')) {
+              return 'icons'
+            }
+            if (id.includes('jspdf')) {
+              return 'jspdf'
+            }
+            if (id.includes('html2canvas')) {
+              return 'html2canvas'
+            }
+            if (id.includes('dompurify') || id.includes('purify')) {
+              return 'dompurify'
+            }
+            if (id.includes('@mediapipe')) {
+              return 'mediapipe'
+            }
+            if (id.includes('date-fns') || id.includes('react-day-picker')) {
+              return 'date-utils'
+            }
+            return 'vendor'
+          }
+        },
+      },
+    },
+  },
+
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
 })

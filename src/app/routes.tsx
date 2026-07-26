@@ -1,29 +1,46 @@
+import { lazy, Suspense } from "react";
 import { createBrowserRouter, Navigate } from "react-router";
 import Root from "./Root";
-import TextAnalysis from "./components/TextAnalysis";
-import ImageDetection from "./components/ImageDetection";
-import VideoDetection from "./components/VideoDetection";
-import URLChecker from "./components/URLChecker";
-import History from "./components/History";
-import Login from "./components/Login";
-import Signup from "./components/Signup";
-import Landing from "./components/Landing";
 import ProtectedRoute from "./components/ProtectedRoute";
-import FeatureChooser from "./components/FeatureChooser";
-import VeritasConnect from "./components/VeritasConnect";
+
+const Landing = lazy(() => import("./components/Landing"));
+const Login = lazy(() => import("./components/Login"));
+const Signup = lazy(() => import("./components/Signup"));
+const FeatureChooser = lazy(() => import("./components/FeatureChooser"));
+const TextAnalysis = lazy(() => import("./components/TextAnalysis"));
+const ImageDetection = lazy(() => import("./components/ImageDetection"));
+const VideoDetection = lazy(() => import("./components/VideoDetection"));
+const URLChecker = lazy(() => import("./components/URLChecker"));
+const History = lazy(() => import("./components/History"));
+const VeritasConnect = lazy(() => import("./components/VeritasConnect"));
+
+const PageLoader = () => (
+  <div className="flex items-center justify-center min-h-[60vh] w-full">
+    <div className="flex flex-col items-center gap-3">
+      <div className="w-10 h-10 border-4 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin" />
+      <p className="text-sm text-gray-400 font-medium animate-pulse">Loading...</p>
+    </div>
+  </div>
+);
+
+const withSuspense = (Component: React.ComponentType) => (
+  <Suspense fallback={<PageLoader />}>
+    <Component />
+  </Suspense>
+);
 
 export const router = createBrowserRouter([
   {
     path: "/welcome",
-    Component: Landing,
+    element: withSuspense(Landing),
   },
   {
     path: "/login",
-    Component: Login,
+    element: withSuspense(Login),
   },
   {
     path: "/signup",
-    Component: Signup,
+    element: withSuspense(Signup),
   },
   {
     path: "/dashboard",
@@ -33,13 +50,13 @@ export const router = createBrowserRouter([
       </ProtectedRoute>
     ),
     children: [
-      { index: true, Component: FeatureChooser },
-      { path: "text-analysis", Component: TextAnalysis },
-      { path: "image-detection", Component: ImageDetection },
-      { path: "video-detection", Component: VideoDetection },
-      { path: "url-checker", Component: URLChecker },
-      { path: "history", Component: History },
-      { path: "veritas-connect", Component: VeritasConnect },
+      { index: true, element: withSuspense(FeatureChooser) },
+      { path: "text-analysis", element: withSuspense(TextAnalysis) },
+      { path: "image-detection", element: withSuspense(ImageDetection) },
+      { path: "video-detection", element: withSuspense(VideoDetection) },
+      { path: "url-checker", element: withSuspense(URLChecker) },
+      { path: "history", element: withSuspense(History) },
+      { path: "veritas-connect", element: withSuspense(VeritasConnect) },
     ],
   },
   {
