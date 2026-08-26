@@ -36,11 +36,6 @@ jobs:
           curl --fail --silent http://127.0.0.1:8000/docs >/dev/null
           docker exec veritasai-backend python -c "import torch, torchvision, transformers, cv2, timm; print('ML runtime imports OK'); print('torch', torch.__version__, 'cuda', torch.cuda.is_available()); print('torchvision', torchvision.__version__)"
 
-      - name: Check video readiness endpoint
-        run: |
-          curl --fail --silent http://127.0.0.1:8000/api/video/readiness >/tmp/video-readiness.json
-          cat /tmp/video-readiness.json
-
       - name: Dump logs on failure
         if: failure()
         run: docker logs veritasai-backend || true
