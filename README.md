@@ -1,125 +1,79 @@
+# VeritasAI Dashboard + FastAPI Backend
 
-  # VeritasAI Dashboard + FastAPI Backend
+This project includes a Vite + React frontend and a FastAPI backend.
 
-  This project now includes:
+## Frontend Setup
 
-  - A Vite + React frontend in the repository root
-  - A FastAPI backend in `backend/`
+```bash
+npm i
+npm run dev
+```
 
-  ## Frontend Setup
+The frontend reads `VITE_API_BASE_URL` and defaults to `http://127.0.0.1:8000`.
 
-  1. Install dependencies:
+## Deploy Frontend To Firebase Hosting
 
-    ```bash
-    npm i
-    ```
+The repository is preconfigured for Firebase Hosting. Set `VITE_API_BASE_URL` in `.env.production`, then run:
 
-  2. Start the frontend:
+```bash
+npm run deploy:hosting
+```
 
-    ```bash
-    npm run dev
-    ```
+## Backend Setup (local)
 
-  The frontend reads `VITE_API_BASE_URL` and defaults to `http://127.0.0.1:8000`.
+```bash
+cd backend
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
+pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+cd ..
+uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+```
 
-  ## Deploy Frontend To Firebase Hosting
+The backend dependencies now use CPU-only PyTorch wheels and `opencv-python-headless`, avoiding CUDA packages and unnecessary GUI libraries in server deployments.
 
-  This repository is preconfigured for Firebase Hosting with:
+## Deploy Backend With Docker
 
-  - `firebase.json` (serves `dist/` and rewrites SPA routes to `index.html`)
-  - `.firebaserc` (default Firebase project: `veritasai-6e4ac`)
-  - npm script: `deploy:hosting`
+The backend has a production Dockerfile at `backend/Dockerfile` and listens on the platform-provided `PORT` (default `8000`).
 
-  1. Set production API URL (required):
+From the repository root:
 
-    ```bash
-    cp .env.production.example .env.production
-    ```
+```bash
+docker build -t veritasai-backend ./backend
+docker run --rm -p 8000:8000 --env-file backend/.env veritasai-backend
+```
 
-    Edit `.env.production` and set:
+For Render, Railway, Fly.io, Google Cloud Run, or another Docker-compatible service, use `backend/` as the Docker build context and `backend/Dockerfile` as the Dockerfile. The service should expose HTTP on `$PORT`.
 
-    ```bash
-    VITE_API_BASE_URL=https://your-backend-domain.com
-    ```
+### Required production configuration
 
-  2. Login to Firebase CLI:
+Configure Firebase credentials using either:
 
-    ```bash
-    npx firebase-tools login
-    ```
+- `FIREBASE_SERVICE_ACCOUNT_PATH`, or
+- `GOOGLE_APPLICATION_CREDENTIALS`
 
-  3. Deploy hosting:
+and configure the frontend's `VITE_API_BASE_URL` to the deployed backend URL.
 
-    ```bash
-    npm run deploy:hosting
-    ```
+### Video/deepfake model
 
-  4. If you want a different Firebase project, switch it before deploy:
+The FaceForensics++ Xception checkpoint is approximately 84 MB and is kept outside the Python dependency installation. Put it at `backend/models/faceforensics_xception.pth` or configure the path using the backend's video model settings. If the checkpoint is not available, the backend can still start; video model readiness should be checked before enabling video analysis.
 
-    ```bash
-    npx firebase-tools use --add
-    ```
+## Backend Firestore Persistence
 
-  ## Firebase Setup
+FastAPI persists users and analysis history to Firestore when Firebase Admin credentials are available. If credentials are missing or invalid, the backend falls back to in-memory storage.
 
-  Firebase app + Cloud Firestore are initialized in `src/app/lib/firebase.ts`.
+Collections used by the backend:
 
-  Optional Vite environment variables:
+- `users`
+- `analysis_history`
 
-  - `VITE_FIREBASE_API_KEY`
-  - `VITE_FIREBASE_AUTH_DOMAIN`
-  - `VITE_FIREBASE_PROJECT_ID`
-  - `VITE_FIREBASE_STORAGE_BUCKET`
-  - `VITE_FIREBASE_MESSAGING_SENDER_ID`
-  - `VITE_FIREBASE_APP_ID`
-  - `VITE_FIREBASE_MEASUREMENT_ID`
+## Connected Input Flows
 
-  If omitted, the app uses your provided Firebase config values.
-
-  To use Google sign-in/sign-up, enable Google as a sign-in provider in Firebase Console:
-
-  - Firebase Console -> Authentication -> Sign-in method -> Google -> Enable
-
-  ## Backend Setup (FastAPI)
-
-  1. Create and activate a Python virtual environment.
-  2. Install backend dependencies:
-
-    ```bash
-    pip install -r backend/requirements.txt
-    ```
-
-  3. Run the API:
-
-    ```bash
-    uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
-    ```
-
-  ## Backend Firestore Persistence
-
-  FastAPI persists users and analysis history to Firestore when Firebase Admin credentials are available.
-
-  Configure one of the following before starting backend:
-
-  - `FIREBASE_SERVICE_ACCOUNT_PATH` (path to Firebase service account JSON), or
-  - `GOOGLE_APPLICATION_CREDENTIALS` (Application Default Credentials).
-
-  Firestore collections used by backend:
-
-  - `users`
-  - `analysis_history`
-
-  If credentials are missing or invalid, backend falls back to in-memory storage.
-
-  ## Connected Input Flows
-
-  The following user inputs are connected to FastAPI endpoints:
-
-  - Login form (`/api/auth/login`)
-  - Signup form (`/api/auth/signup`)
-  - Text analysis input (`/api/analyze/text`)
-  - URL checker input (`/api/analyze/url`)
-  - Image upload (`/api/analyze/image`)
-  - Video upload (`/api/analyze/video`)
-  - History view (`/api/history`)
-  
+- Login: `/api/auth/login`
+- Signup: `/api/auth/signup`
+- Text analysis: `/api/analyze/text`
+- URL checker: `/api/analyze/url`
+- Image upload: `/api/analyze/image`
+- Video upload: `/api/analyze/video`
+- History: `/api/history`
