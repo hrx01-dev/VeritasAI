@@ -2,9 +2,11 @@ from __future__ import annotations
 
 """Production runtime fixes for VeritasAI analysis endpoints.
 
-This wrapper keeps the security/authentication layer from secure_main.py while
-providing one canonical trained text classifier for both direct text and URL
-content analysis, plus ephemeral trained video inference.
+Keeps the security/authentication layer from secure_main.py while providing:
+- explicit PyTorch text inference (no transformers.pipeline dependency)
+- trained image/video inference
+- ephemeral video processing
+- one canonical text scoring path for direct text and URL analysis
 """
 
 import os
@@ -23,75 +25,117 @@ TEXT_MODEL_ID = os.getenv(
     "TEXT_MODEL_ID",
     "mrm8488/bert-tiny-finetuned-fake-news-detection",
 )
+_TEXT_TOKENIZER = None
 _TEXT_MODEL = None
 
 
 def _load_production_text_model():
-    global _TEXT_MODEL
+    """Load the text model explicitly instead of using transformers.pipeline.
 
-    if _TEXT_MODEL is not None:
-        return _TEXT_MODEL
+    This is deliberately isolated from the image/video dependencies. A failure
+    in facenet/torchvision/timm must never turn text analysis into a 503.
+    """
+    global _TEXT_TOKENIZER, _TEXT_MODEL
 
-    if secure.pipeline is None:
-        raise RuntimeError("transformers is not installed")
+    if _TEXT_TOKENIZER is not None and _TEXT_MODEL is not None:
+        return _TEXT_TOKENIZER, _TEXT_MODEL
 
-    _TEXT_MODEL = secure.pipeline(
-        "text-classification",
-        model=TEXT_MODEL_ID,
-        truncation=True,
-        max_length=512,
-        top_k=None,
-    )
-    return _TEXT_MODEL
+    try:
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    except Exception as exc:
+        raise RuntimeError("PyTorch/Transformers text runtime is unavailable") from exc
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL_ID)
+        model = AutoModelForSequenceClassification.from_pretrained(TEXT_MODEL_ID)
+        model.eval()
+        model.to("cpu")
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to load trained text model '{TEXT_MODEL_ID}'"
+        ) from exc
+
+    _TEXT_TOKENIZER = tokenizer
+    _TEXT_MODEL = model
+    return tokenizer, model
+
+
+def _label_is_fake(label: str) -> bool:
+    label = label.strip().lower()
+    return any(value in label for value in ("fake", "false", "misinformation", "hoax"))
+
+
+def _label_is_real(label: str) -> bool:
+    label = label.strip().lower()
+    return any(value in label for value in ("real", "true", "factual", "reliable"))
 
 
 def _text_scores(text: str) -> Dict[str, float]:
     if not text or not text.strip():
         raise ValueError("Text content is empty")
 
-    classifier = _load_production_text_model()
-    raw = classifier(text.strip())
+    tokenizer, model = _load_production_text_model()
+    import torch
 
-    if raw and isinstance(raw[0], list):
-        raw = raw[0]
+    encoded = tokenizer(
+        text.strip(),
+        return_tensors="pt",
+        truncation=True,
+        max_length=512,
+    )
 
-    fake = None
-    real = None
-    for item in raw or []:
-        label = str(item.get("label", "")).strip().lower()
-        score = float(item.get("score", 0.0))
+    with torch.inference_mode():
+        logits = model(**encoded).logits
+        probabilities = torch.softmax(logits, dim=-1)[0].detach().cpu().tolist()
 
-        if "fake" in label or "false" in label or label in {"label_0", "0"}:
-            fake = score
-        elif "real" in label or "true" in label or label in {"label_1", "1"}:
-            real = score
+    id2label = getattr(model.config, "id2label", {}) or {}
+    labels = [str(id2label.get(i, f"LABEL_{i}")) for i in range(len(probabilities))]
 
-    if fake is None and real is None and raw:
-        first = raw[0]
-        label = str(first.get("label", "")).strip().lower()
-        score = float(first.get("score", 0.5))
-        if label in {"label_0", "0"}:
-            fake = score
-            real = 1.0 - score
-        elif label in {"label_1", "1"}:
-            real = score
-            fake = 1.0 - score
+    fake = 0.0
+    real = 0.0
+    fake_indices = []
+    real_indices = []
 
-    if fake is None and real is not None:
-        fake = 1.0 - real
-    if real is None and fake is not None:
-        real = 1.0 - fake
+    for index, label in enumerate(labels):
+        if _label_is_fake(label):
+            fake_indices.append(index)
+        elif _label_is_real(label):
+            real_indices.append(index)
 
-    if fake is None or real is None:
-        raise RuntimeError("Trained text model returned unrecognized classification labels")
+    if fake_indices:
+        fake = sum(probabilities[i] for i in fake_indices)
+    if real_indices:
+        real = sum(probabilities[i] for i in real_indices)
 
-    fake = max(0.0, min(1.0, float(fake)))
-    real = max(0.0, min(1.0, float(real)))
+    # Most binary HF fake-news models expose LABEL_0/LABEL_1 rather than
+    # semantic labels. mrm8488's model uses LABEL_0=fake and LABEL_1=real.
+    if fake == 0.0 and real == 0.0 and len(probabilities) == 2:
+        fake, real = probabilities[0], probabilities[1]
+
+    # For an unexpected multi-class model, fall back to the model's strongest
+    # class rather than returning an unusable zero score.
+    if fake == 0.0 and real == 0.0:
+        best = max(range(len(probabilities)), key=probabilities.__getitem__)
+        best_label = labels[best].lower()
+        if _label_is_fake(best_label):
+            fake = probabilities[best]
+            real = 1.0 - fake
+        elif _label_is_real(best_label):
+            real = probabilities[best]
+            fake = 1.0 - real
+        else:
+            fake = probabilities[best]
+            real = 1.0 - fake
+
     total = fake + real
     if total <= 0:
-        raise RuntimeError("Trained text model returned invalid classification scores")
+        raise RuntimeError("Trained text model returned invalid probabilities")
 
-    return {"fake_score": fake / total, "real_score": real / total}
+    fake /= total
+    real /= total
+    fake, real = secure._calibrate_binary(fake, real)
+    return {"fake_score": fake, "real_score": real}
 
 
 def _production_text_classifier():
@@ -113,9 +157,7 @@ def _production_content_score(text: str) -> Dict[str, float]:
     return _text_scores(text)
 
 
-# The secure wrapper defines /api/analyze/text itself and resolves its model
-# loader from the secure_main module. Patch that loader too; patching only the
-# legacy module leaves the direct text route on the old model implementation.
+# Patch every text-analysis path to the same explicit PyTorch implementation.
 legacy._load_text_classifier = _production_text_classifier
 legacy._model_content_score = _production_content_score
 secure._load_text_classifier = _production_text_classifier
@@ -127,7 +169,7 @@ secure._TEXT_MODEL = None
 # Ephemeral trained video analysis
 # ---------------------------------------------------------------------------
 def _trained_video_probability(frame_bgr: Any) -> float:
-    """Run the already-trained image deepfake classifier on one video frame."""
+    """Run the trained image deepfake classifier on one video frame."""
     if secure.pipeline is None:
         raise RuntimeError("transformers is not installed")
 
@@ -168,7 +210,8 @@ def _trained_video_probability(frame_bgr: Any) -> float:
 def _analyze_video_payload(payload: bytes, filename: str) -> legacy.AnalysisResponse:
     """Analyze video ephemerally using trained frame-level deepfake inference.
 
-    No video or extracted frames are written outside a TemporaryDirectory.
+    The upload and extracted frames exist only inside TemporaryDirectory and
+    are removed automatically when analysis completes or raises an exception.
     """
     suffix = Path(filename or "uploaded-video.mp4").suffix or ".mp4"
     import tempfile
