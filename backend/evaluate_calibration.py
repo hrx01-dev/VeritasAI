@@ -16,9 +16,6 @@ import csv
 import math
 from pathlib import Path
 
-import numpy as np
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
-
 
 def _softmax_temperature(p: float, temperature: float) -> float:
     eps = 1e-6
@@ -29,39 +26,45 @@ def _softmax_temperature(p: float, temperature: float) -> float:
 
 def _nll(probs, labels, temperature):
     eps = 1e-7
-    calibrated = [_softmax_temperature(p, temperature) for p in probs]
-    return -float(np.mean([
-        math.log(max(p, eps)) if y == 1 else math.log(max(1 - p, eps))
-        for p, y in zip(calibrated, labels)
-    ]))
+    total = 0.0
+    for p, y in zip(probs, labels):
+        calibrated = _softmax_temperature(p, temperature)
+        total += math.log(max(calibrated if y else 1 - calibrated, eps))
+    return -total / len(labels)
 
 
 def _ece(probs, labels, bins=10):
-    probs = np.asarray(probs, dtype=float)
-    labels = np.asarray(labels, dtype=int)
     total = len(labels)
     error = 0.0
-    for low, high in zip(np.linspace(0, 1, bins + 1)[:-1], np.linspace(0, 1, bins + 1)[1:]):
-        mask = (probs >= low) & (probs < high if high < 1 else probs <= high)
-        if not np.any(mask):
+    for index in range(bins):
+        low = index / bins
+        high = (index + 1) / bins
+        bucket = [i for i, p in enumerate(probs) if low <= p < high or (index == bins - 1 and p <= high)]
+        if not bucket:
             continue
-        confidence = float(np.mean(probs[mask]))
-        accuracy = float(np.mean(labels[mask]))
-        error += (np.sum(mask) / total) * abs(confidence - accuracy)
+        confidence = sum(probs[i] for i in bucket) / len(bucket)
+        accuracy = sum(labels[i] for i in bucket) / len(bucket)
+        error += (len(bucket) / total) * abs(confidence - accuracy)
     return error
 
 
 def _metrics(probs, labels, temperature):
-    calibrated = np.array([_softmax_temperature(p, temperature) for p in probs])
-    predicted = (calibrated >= 0.5).astype(int)
+    calibrated = [_softmax_temperature(p, temperature) for p in probs]
+    predicted = [1 if p >= 0.5 else 0 for p in calibrated]
+    tp = sum(y == 1 and p == 1 for y, p in zip(labels, predicted))
+    tn = sum(y == 0 and p == 0 for y, p in zip(labels, predicted))
+    fp = sum(y == 0 and p == 1 for y, p in zip(labels, predicted))
+    fn = sum(y == 1 and p == 0 for y, p in zip(labels, predicted))
+    precision = tp / max(tp + fp, 1)
+    recall = tp / max(tp + fn, 1)
     return {
         "temperature": temperature,
-        "accuracy": float(accuracy_score(labels, predicted)),
-        "precision": float(precision_score(labels, predicted, zero_division=0)),
-        "recall": float(recall_score(labels, predicted, zero_division=0)),
-        "f1": float(f1_score(labels, predicted, zero_division=0)),
-        "ece": float(_ece(calibrated, labels)),
-        "confusion_matrix": confusion_matrix(labels, predicted).tolist(),
+        "accuracy": (tp + tn) / max(len(labels), 1),
+        "precision": precision,
+        "recall": recall,
+        "f1": 2 * precision * recall / max(precision + recall, 1e-12),
+        "ece": _ece(calibrated, labels),
+        "confusion_matrix": [[tn, fp], [fn, tp]],
     }
 
 
@@ -100,14 +103,14 @@ def main():
         raise SystemExit("Validation CSV is empty")
 
     baseline = _metrics(probs, labels, 1.0)
-    candidates = np.linspace(0.25, 4.0, 151)
-    best_temperature = min(candidates, key=lambda t: _nll(probs, labels, float(t)))
-    calibrated = _metrics(probs, labels, float(best_temperature))
+    candidates = [0.25 + i * 0.025 for i in range(151)]
+    best_temperature = min(candidates, key=lambda t: _nll(probs, labels, t))
+    calibrated = _metrics(probs, labels, best_temperature)
 
     print("MODEL:", model_id)
     print("BASELINE:", baseline)
     print("CALIBRATED:", calibrated)
-    print("Set DETECTION_TEMPERATURE=", round(float(best_temperature), 4))
+    print("Set DETECTION_TEMPERATURE=", round(best_temperature, 4))
 
 
 if __name__ == "__main__":
