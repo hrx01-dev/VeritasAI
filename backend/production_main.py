@@ -19,8 +19,6 @@ legacy = secure.legacy
 # ---------------------------------------------------------------------------
 # Canonical trained text classifier
 # ---------------------------------------------------------------------------
-# Keep the default model small enough for CPU deployments. The model is a
-# genuine fine-tuned fake-news classifier, not a zero-shot classifier.
 TEXT_MODEL_ID = os.getenv(
     "TEXT_MODEL_ID",
     "mrm8488/bert-tiny-finetuned-fake-news-detection",
@@ -37,7 +35,6 @@ def _load_production_text_model():
     if secure.pipeline is None:
         raise RuntimeError("transformers is not installed")
 
-    # top_k=None returns both class scores instead of only the winning class.
     _TEXT_MODEL = secure.pipeline(
         "text-classification",
         model=TEXT_MODEL_ID,
@@ -55,8 +52,6 @@ def _text_scores(text: str) -> Dict[str, float]:
     classifier = _load_production_text_model()
     raw = classifier(text.strip())
 
-    # Transformers can return either [{...}, {...}] or [[{...}, {...}]]
-    # depending on the installed pipeline version and batching behaviour.
     if raw and isinstance(raw[0], list):
         raw = raw[0]
 
@@ -71,9 +66,6 @@ def _text_scores(text: str) -> Dict[str, float]:
         elif "real" in label or "true" in label or label in {"label_1", "1"}:
             real = score
 
-    # The selected model is a binary fake-news classifier. Some Transformers
-    # versions expose generic LABEL_0/LABEL_1 names, so retain the established
-    # model mapping as a fallback when semantic labels are unavailable.
     if fake is None and real is None and raw:
         first = raw[0]
         label = str(first.get("label", "")).strip().lower()
@@ -121,11 +113,12 @@ def _production_content_score(text: str) -> Dict[str, float]:
     return _text_scores(text)
 
 
-# Replace the legacy zero-shot path and the secure wrapper's older adapter.
-# Both /api/analyze/text and /api/analyze/url resolve these functions at
-# request time, so they now use exactly the same trained classifier.
+# The secure wrapper defines /api/analyze/text itself and resolves its model
+# loader from the secure_main module. Patch that loader too; patching only the
+# legacy module leaves the direct text route on the old model implementation.
 legacy._load_text_classifier = _production_text_classifier
 legacy._model_content_score = _production_content_score
+secure._load_text_classifier = _production_text_classifier
 secure._TEXT_MODEL_ID = TEXT_MODEL_ID
 secure._TEXT_MODEL = None
 
