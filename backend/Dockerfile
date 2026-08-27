@@ -28,5 +28,6 @@ USER appuser
 
 EXPOSE 8000
 
-# secure_main imports the legacy implementation and applies the security/model runtime patches.
-CMD ["sh", "-c", "uvicorn secure_main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# production_main keeps secure_main's auth/SSRF protections and patches the
+# analysis runtime for CPU-friendly text and video inference.
+CMD ["sh", "-c", "uvicorn production_main:app --host 0.0.0.0 --port ${PORT:-8000}"]
