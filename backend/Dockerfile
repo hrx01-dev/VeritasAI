@@ -28,5 +28,5 @@ USER appuser
 
 EXPOSE 8000
 
-# The Docker build context is ./backend, so main.py lives directly under /app.
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# secure_main imports the legacy implementation and applies the security/model runtime patches.
+CMD ["sh", "-c", "uvicorn secure_main:app --host 0.0.0.0 --port ${PORT:-8000}"]
