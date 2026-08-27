@@ -3,7 +3,8 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PORT=8000
 
 WORKDIR /app
 
@@ -26,4 +27,6 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Always start the secure production wrapper. It patches the legacy analysis
+# implementation with the trained text/video paths and security middleware.
+CMD ["sh", "-c", "uvicorn production_main:app --host 0.0.0.0 --port ${PORT:-8000}"]
