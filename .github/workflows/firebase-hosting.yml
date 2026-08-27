@@ -26,17 +26,48 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate Firebase Web SDK config
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_VERITASAI_6E4AC }}
+        run: |
+          set -euo pipefail
+
+          credentials_file="$RUNNER_TEMP/firebase-service-account.json"
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$credentials_file"
+          export GOOGLE_APPLICATION_CREDENTIALS="$credentials_file"
+
+          echo "Discovering the Firebase Web App registered for veritasai-6e4ac..."
+          apps_json="$RUNNER_TEMP/firebase-apps.json"
+          npx --yes firebase-tools@latest apps:list WEB --project=veritasai-6e4ac --json > "$apps_json"
+
+          app_id="$(jq -r '.result[]? | select(.platform == "WEB") | .appId' "$apps_json" | head -n 1)"
+          if [ -z "$app_id" ] || [ "$app_id" = "null" ]; then
+            echo "No Firebase Web App is registered for veritasai-6e4ac."
+            exit 1
+          fi
+
+          echo "Fetching the SDK configuration for the discovered Web App..."
+          sdk_json="$RUNNER_TEMP/firebase-sdkconfig.json"
+          npx --yes firebase-tools@latest apps:sdkconfig WEB "$app_id" --project=veritasai-6e4ac --json > "$sdk_json"
+
+          jq -e '.result.sdkConfig.apiKey and .result.sdkConfig.authDomain and .result.sdkConfig.projectId and .result.sdkConfig.appId' "$sdk_json" > /dev/null
+
+          {
+            echo "VITE_FIREBASE_API_KEY=$(jq -r '.result.sdkConfig.apiKey' "$sdk_json")"
+            echo "VITE_FIREBASE_AUTH_DOMAIN=$(jq -r '.result.sdkConfig.authDomain' "$sdk_json")"
+            echo "VITE_FIREBASE_DATABASE_URL=$(jq -r '.result.sdkConfig.databaseURL // empty' "$sdk_json")"
+            echo "VITE_FIREBASE_PROJECT_ID=$(jq -r '.result.sdkConfig.projectId' "$sdk_json")"
+            echo "VITE_FIREBASE_STORAGE_BUCKET=$(jq -r '.result.sdkConfig.storageBucket // empty' "$sdk_json")"
+            echo "VITE_FIREBASE_MESSAGING_SENDER_ID=$(jq -r '.result.sdkConfig.messagingSenderId' "$sdk_json")"
+            echo "VITE_FIREBASE_APP_ID=$(jq -r '.result.sdkConfig.appId' "$sdk_json")"
+            echo "VITE_FIREBASE_MEASUREMENT_ID=$(jq -r '.result.sdkConfig.measurementId // empty' "$sdk_json")"
+          } > .env.production
+
+          rm -f "$credentials_file" "$apps_json" "$sdk_json"
+
       - name: Build frontend
         env:
           VITE_API_BASE_URL: https://veritasai-backend-main.onrender.com
-          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
-          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
-          VITE_FIREBASE_DATABASE_URL: ${{ secrets.VITE_FIREBASE_DATABASE_URL }}
-          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
-          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
-          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
-          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
-          VITE_FIREBASE_MEASUREMENT_ID: ${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
         run: npm run build
 
       - name: Deploy to Firebase Hosting
