@@ -16,7 +16,8 @@ RUN apt-get update \
 COPY requirements.txt ./requirements.txt
 
 # Install CPU-only PyTorch wheels so the container does not pull CUDA runtimes.
-RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt \
+    && pip install --no-deps facenet-pytorch==2.6.0
 
 COPY . .
 
