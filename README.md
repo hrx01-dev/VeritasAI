@@ -19,6 +19,19 @@ The repository is preconfigured for Firebase Hosting. Set `VITE_API_BASE_URL` in
 npm run deploy:hosting
 ```
 
+For the GitHub Actions Firebase Hosting deployment, the following repository secrets must also be configured so Firebase Authentication is initialized in the production browser build:
+
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_DATABASE_URL`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_FIREBASE_MEASUREMENT_ID`
+
+These are Firebase Web SDK configuration values; they are embedded in the frontend bundle by design. Keeping them in GitHub Actions secrets avoids coupling the repository to one deployment environment and ensures the production build receives the same configuration as local development.
+
 ## Backend Setup (local)
 
 ```bash
