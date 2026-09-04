@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { Shield, Mail, Lock, ArrowRight, AlertCircle, Chrome } from "lucide-react";
+import { Shield, Mail, Lock, ArrowRight, AlertCircle, Chrome, ScanLine, Sparkles } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import { login as loginRequest } from "../lib/api";
 import { consumeGoogleRedirectResult, signInWithGoogle } from "../lib/firebase";
@@ -22,13 +22,7 @@ export default function Login() {
 
   const completeGoogleLogin = async (user: { email: string | null; getIdToken: () => Promise<string> }) => {
     const firebaseToken = await user.getIdToken();
-
-    const auth = await loginRequest({
-      email: user.email || "",
-      password: firebaseToken,
-      remember_me: false,
-    });
-
+    const auth = await loginRequest({ email: user.email || "", password: firebaseToken, remember_me: false });
     saveLocalSession(auth.user.name, auth.user.email, auth.token);
     navigate("/dashboard");
   };
@@ -37,10 +31,7 @@ export default function Login() {
     const consumeRedirect = async () => {
       try {
         const credential = await consumeGoogleRedirectResult();
-        if (!credential) {
-          return;
-        }
-
+        if (!credential) return;
         setIsGoogleLoading(true);
         setError("");
         await completeGoogleLogin(credential.user);
@@ -50,28 +41,19 @@ export default function Login() {
         setIsGoogleLoading(false);
       }
     };
-
     void consumeRedirect();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    
     if (!email || !password) {
       setError("Please fill in all fields");
       return;
     }
-
     setIsLoading(true);
-
     try {
-      const auth = await loginRequest({
-        email,
-        password,
-        remember_me: rememberMe,
-      });
-
+      const auth = await loginRequest({ email, password, remember_me: rememberMe });
       saveLocalSession(auth.user.name, auth.user.email, auth.token);
       navigate("/dashboard");
     } catch (err) {
@@ -84,173 +66,98 @@ export default function Login() {
   const handleGoogleSignIn = async () => {
     setError("");
     setIsGoogleLoading(true);
-
     try {
       const credential = await signInWithGoogle();
       if (!credential) {
         setError("Continuing Google sign-in...");
         return;
       }
-
       await completeGoogleLogin(credential.user);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Google sign-in failed";
-      setError(errorMsg);
+      setError(err instanceof Error ? err.message : "Google sign-in failed");
     } finally {
       setIsGoogleLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-900 flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Animated background */}
-      <div className="absolute inset-0">
-        <div className="absolute top-1/4 left-1/4 size-96 bg-cyan-500/5 rounded-full blur-3xl animate-pulse"></div>
-        <div className="absolute bottom-1/4 right-1/4 size-96 bg-blue-500/5 rounded-full blur-3xl animate-pulse delay-1000"></div>
+    <main className="relative min-h-screen overflow-hidden bg-slate-50 text-slate-900 dark:bg-[#070b12] dark:text-slate-100">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -left-32 -top-32 size-[30rem] rounded-full bg-sky-200/40 blur-3xl dark:bg-sky-500/10" />
+        <div className="absolute -bottom-40 -right-24 size-[32rem] rounded-full bg-indigo-200/30 blur-3xl dark:bg-indigo-500/10" />
+        <div className="tech-grid absolute inset-0 opacity-20 dark:opacity-30" />
       </div>
 
-      {/* Login card */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-        className="relative z-10 w-full max-w-md"
-      >
-        <div className="bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-2xl border border-gray-700/50 p-8 shadow-2xl shadow-black/20 backdrop-blur-sm">
-          {/* Logo and title */}
-          <div className="flex flex-col items-center mb-8">
-            <motion.div
-              initial={{ scale: 0.5, rotate: -10 }}
-              animate={{ scale: 1, rotate: 0 }}
-              transition={{ duration: 0.5 }}
-              className="p-4 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-2xl shadow-lg shadow-cyan-500/30 mb-4"
-            >
-              <Shield className="size-12 text-white" />
-            </motion.div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
-              VeritasAI
-            </h1>
-            <p className="text-gray-400 text-sm mt-1">Sign in to your account</p>
-          </div>
-
-          {/* Error message */}
-          {error && (
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mb-6 p-3 bg-red-950/30 border border-red-500/30 rounded-xl flex items-center gap-2"
-            >
-              <AlertCircle className="size-5 text-red-500" />
-              <p className="text-sm text-red-400">{error}</p>
-            </motion.div>
-          )}
-
-          {/* Login form */}
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm text-gray-400 mb-2">Email</label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 size-5 text-gray-500" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  className="w-full pl-12 pr-4 py-3 bg-gray-900/50 border border-gray-700 rounded-xl text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent transition-all"
-                />
+      <div className="relative mx-auto flex min-h-screen w-full max-w-7xl items-center px-4 py-8 sm:px-6 lg:px-8">
+        <motion.div
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
+          className="grid w-full overflow-hidden rounded-[2rem] border border-slate-200/80 bg-white/80 shadow-[0_30px_100px_rgba(30,55,90,0.12)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/80 dark:shadow-[0_30px_100px_rgba(0,0,0,0.35)] lg:grid-cols-[0.9fr_1.1fr]"
+        >
+          <section className="relative hidden min-h-[680px] overflow-hidden bg-slate-950 p-10 text-white lg:flex lg:flex-col lg:justify-between">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(56,189,248,0.2),transparent_35%),radial-gradient(circle_at_85%_75%,rgba(99,102,241,0.2),transparent_35%)]" />
+            <div className="tech-grid absolute inset-0 opacity-30" />
+            <div className="relative">
+              <div className="flex items-center gap-3">
+                <div className="grid size-11 place-items-center rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-600 shadow-lg shadow-cyan-500/20">
+                  <Shield className="size-6" />
+                </div>
+                <div>
+                  <p className="text-lg font-semibold tracking-tight">VeritasAI</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">Trust intelligence</p>
+                </div>
               </div>
             </div>
-
-            <div>
-              <label className="block text-sm text-gray-400 mb-2">Password</label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 size-5 text-gray-500" />
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full pl-12 pr-4 py-3 bg-gray-900/50 border border-gray-700 rounded-xl text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent transition-all"
-                />
+            <div className="relative max-w-md">
+              <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
+                <Sparkles className="size-3.5 text-cyan-300" /> Secure verification workspace
+              </div>
+              <h1 className="text-4xl font-semibold leading-[1.05] tracking-[-0.04em] xl:text-5xl">Question the noise. Trust the signal.</h1>
+              <p className="mt-5 text-sm leading-6 text-slate-400">Verify text, media and sources with a focused intelligence workspace built for clarity.</p>
+              <div className="mt-8 flex items-center gap-3 text-xs text-slate-400">
+                <span className="grid size-9 place-items-center rounded-xl border border-white/10 bg-white/5"><ScanLine className="size-4 text-cyan-300" /></span>
+                Multimodal analysis · Private workspace
               </div>
             </div>
+            <p className="relative text-xs text-slate-500">Evidence first. Decisions second.</p>
+          </section>
 
-            <div className="flex items-center justify-between text-sm">
-              <label className="flex items-center gap-2 text-gray-400 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="rounded border-gray-700 bg-gray-900"
-                />
-                Remember me
-              </label>
-              <a href="#" className="text-cyan-400 hover:text-cyan-300 transition-colors">
-                Forgot password?
-              </a>
+          <section className="flex items-center p-6 sm:p-10 lg:p-14">
+            <div className="mx-auto w-full max-w-md">
+              <div className="mb-8 lg:hidden">
+                <div className="mb-5 flex items-center gap-3">
+                  <div className="grid size-10 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-blue-600 text-white"><Shield className="size-5" /></div>
+                  <span className="font-semibold">VeritasAI</span>
+                </div>
+              </div>
+              <div className="mb-8">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-sky-600 dark:text-sky-300">Welcome back</p>
+                <h2 className="text-3xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">Sign in to continue.</h2>
+                <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Access your verification workspace.</p>
+              </div>
+
+              {error && <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-5 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300"><AlertCircle className="size-4 shrink-0" />{error}</motion.div>}
+
+              <form onSubmit={handleSubmit} className="space-y-5">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Email</label>
+                  <div className="relative"><Mail className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" className="w-full rounded-xl border border-slate-200 bg-slate-50/80 py-3.5 pl-11 pr-4 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:ring-4 focus:ring-sky-100 dark:border-slate-700 dark:bg-slate-800/70 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-sky-500 dark:focus:bg-slate-800 dark:focus:ring-sky-500/10" /></div>
+                </div>
+                <div>
+                  <div className="mb-2 flex items-center justify-between"><label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Password</label><a href="#" className="text-xs font-medium text-sky-600 hover:text-sky-500 dark:text-sky-300">Forgot password?</a></div>
+                  <div className="relative"><Lock className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className="w-full rounded-xl border border-slate-200 bg-slate-50/80 py-3.5 pl-11 pr-4 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:ring-4 focus:ring-sky-100 dark:border-slate-700 dark:bg-slate-800/70 dark:text-white dark:focus:border-sky-500 dark:focus:bg-slate-800 dark:focus:ring-sky-500/10" /></div>
+                </div>
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-500 dark:text-slate-400"><input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="size-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500" />Remember me</label>
+                <button type="submit" disabled={isLoading || isGoogleLoading} className="group flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 py-3.5 text-sm font-semibold text-white shadow-lg shadow-slate-950/10 transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100">{isLoading ? <><span className="size-4 animate-spin rounded-full border-2 border-white/30 border-t-white dark:border-slate-900/30 dark:border-t-slate-900" />Signing in...</> : <>Sign In<ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" /></>}</button>
+                <div className="relative py-1"><div className="h-px bg-slate-200 dark:bg-slate-800" /><span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-3 text-[10px] font-semibold tracking-widest text-slate-400 dark:bg-slate-900">OR</span></div>
+                <button type="button" onClick={handleGoogleSignIn} disabled={isGoogleLoading || isLoading} className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-3.5 text-sm font-semibold text-slate-700 transition hover:-translate-y-0.5 hover:border-slate-300 hover:bg-slate-50 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">{isGoogleLoading ? <><span className="size-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700 dark:border-slate-600 dark:border-t-white" />Connecting Google...</> : <><Chrome className="size-4" />Continue with Google</>}</button>
+              </form>
+              <p className="mt-7 text-center text-sm text-slate-500 dark:text-slate-400">Don't have an account? <Link to="/signup" className="font-semibold text-sky-600 hover:text-sky-500 dark:text-sky-300">Create one</Link></p>
             </div>
-
-            <button
-              type="submit"
-              disabled={isLoading || isGoogleLoading}
-              className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-gray-700 disabled:to-gray-700 text-white font-medium rounded-xl transition-all shadow-lg shadow-cyan-500/30 hover:shadow-cyan-500/50 hover:scale-[1.02] disabled:scale-100 disabled:shadow-none flex items-center justify-center gap-2"
-            >
-              {isLoading ? (
-                <>
-                  <div className="size-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Signing in...
-                </>
-              ) : (
-                <>
-                  Sign In
-                  <ArrowRight className="size-5" />
-                </>
-              )}
-            </button>
-
-            <div className="relative py-1">
-              <div className="h-px bg-gray-700/60" />
-              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-gray-900 px-2 text-xs text-gray-500">
-                OR
-              </span>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              disabled={isGoogleLoading || isLoading}
-              className="w-full py-3 bg-gray-800 hover:bg-gray-700 disabled:bg-gray-700 disabled:text-gray-500 text-gray-200 font-medium rounded-xl transition-all border border-gray-600 hover:border-gray-500 flex items-center justify-center gap-2"
-            >
-              {isGoogleLoading ? (
-                <>
-                  <div className="size-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Connecting Google...
-                </>
-              ) : (
-                <>
-                  <Chrome className="size-5" />
-                  Continue with Google
-                </>
-              )}
-            </button>
-          </form>
-
-          {/* Sign up link */}
-          <div className="mt-6 text-center">
-            <p className="text-gray-400 text-sm">
-              Don't have an account?{" "}
-              <Link to="/signup" className="text-cyan-400 hover:text-cyan-300 transition-colors font-medium">
-                Sign up
-              </Link>
-            </p>
-          </div>
-        </div>
-
-        {/* Footer text */}
-        <p className="text-center text-gray-500 text-xs mt-6">
-          Secure authentication powered by VeritasAI
-        </p>
-      </motion.div>
-    </div>
+          </section>
+        </motion.div>
+      </div>
+    </main>
   );
 }
