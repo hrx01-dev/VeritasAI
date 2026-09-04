@@ -1,11 +1,16 @@
 import { Moon, Sun, LogOut, LayoutGrid } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import VeritasLogo from "./VeritasLogo";
 
 export default function Header() {
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(() => localStorage.getItem("veritasai_theme") !== "light");
   const navigate = useNavigate();
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", isDark);
+    localStorage.setItem("veritasai_theme", isDark ? "dark" : "light");
+  }, [isDark]);
 
   const handleLogout = () => {
     localStorage.removeItem("veritasai_authenticated");
@@ -17,53 +22,33 @@ export default function Header() {
   const user = JSON.parse(localStorage.getItem("veritasai_user") || "{}");
 
   return (
-    <header className="h-16 bg-gradient-to-r from-gray-900 to-black border-b border-gray-800/50 px-6 flex items-center justify-between shadow-xl backdrop-blur-sm">
-      {/* Brand */}
-      <div className="flex items-center gap-4">
-        <VeritasLogo />
-        <div className="h-8 w-px bg-gray-700/60" />
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Dashboard</h2>
-          {user.name && <p className="text-xs text-gray-500">Welcome, {user.name}</p>}
-        </div>
-      </div>
-
-      {/* Status & Theme Toggle */}
-      <div className="flex items-center gap-4">
-        <button
-          onClick={() => navigate("/dashboard")}
-          className="inline-flex items-center gap-2 rounded-xl border border-gray-700/50 bg-gray-800/50 px-3 py-2 text-sm text-gray-300 transition-all hover:border-cyan-500/30 hover:text-cyan-300"
-        >
-          <LayoutGrid className="size-4" />
-          Features
-        </button>
-
-        {/* Live Status Indicator */}
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-green-950/30 border border-green-500/30 rounded-full">
-          <div className="relative">
-            <div className="size-3 bg-green-500 rounded-full animate-pulse"></div>
-            <div className="absolute inset-0 size-3 bg-green-500 rounded-full animate-ping opacity-75"></div>
+    <header className="sticky top-0 z-50 h-16 border-b border-border bg-background/80 px-4 sm:px-6 backdrop-blur-xl">
+      <div className="mx-auto flex h-full max-w-[1600px] items-center justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <VeritasLogo />
+          <div className="hidden h-7 w-px bg-border sm:block" />
+          <div className="hidden sm:block">
+            <p className="text-xs font-semibold uppercase tracking-[.18em] text-foreground/80">Workspace</p>
+            {user.name && <p className="truncate text-xs text-muted-foreground">Welcome, {user.name}</p>}
           </div>
-          <span className="text-sm text-green-400 font-medium">System Active</span>
         </div>
 
-        {/* Theme Toggle */}
-        <button
-          onClick={() => setIsDark(!isDark)}
-          className="p-2 rounded-xl bg-gray-800/50 hover:bg-gray-700/50 text-gray-400 hover:text-gray-200 transition-all border border-gray-700/50 hover:border-cyan-500/30 hover:shadow-lg hover:shadow-cyan-500/10"
-          aria-label="Toggle theme"
-        >
-          {isDark ? <Moon className="size-5" /> : <Sun className="size-5" />}
-        </button>
-
-        {/* Logout Button */}
-        <button
-          onClick={handleLogout}
-          className="p-2 rounded-xl bg-gray-800/50 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-all border border-gray-700/50 hover:border-red-500/30"
-          aria-label="Logout"
-        >
-          <LogOut className="size-5" />
-        </button>
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="hidden items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground md:flex">
+            <span className="size-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,.65)]" />
+            System active
+          </div>
+          <button onClick={() => navigate("/dashboard")} className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground/80 transition hover:border-primary/40 hover:text-foreground" aria-label="Open features">
+            <LayoutGrid className="size-4" />
+            <span className="hidden sm:inline">Features</span>
+          </button>
+          <button onClick={() => setIsDark((value) => !value)} className="rounded-lg border border-border bg-card p-2 text-muted-foreground transition hover:text-foreground" aria-label="Toggle theme">
+            {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </button>
+          <button onClick={handleLogout} className="rounded-lg border border-border bg-card p-2 text-muted-foreground transition hover:border-destructive/40 hover:text-destructive" aria-label="Logout">
+            <LogOut className="size-4" />
+          </button>
+        </div>
       </div>
     </header>
   );
